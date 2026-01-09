@@ -349,7 +349,7 @@ try:
                 'config': model.config
             }
             if losses['val'] < 1.27:
-                torch.save(checkpoint,f'/content/NanoPoor/src/checkpoints/check_{iter}.pt')
+                torch.save(checkpoint,f'checkpoints/check_{iter}.pt')
     
         
         
@@ -411,4 +411,5 @@ finally:
     if distributed_initialized and dist.is_initialized():
         dist.destroy_process_group()
     print("Training finished or interrupted.")
+
 
