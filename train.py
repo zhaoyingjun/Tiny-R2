@@ -401,6 +401,29 @@ try:
 
 
 
+ #----------wandb log---------------------
+
+        if wandb_log:
+            log_dict = {
+                "train/loss": loss_accum/grad_accum_steps,
+                "perf/tok_per_sec": tps,
+                "perf/iter_time_ms": step_time_ms,
+                "perf/elapsed_s": time.time() - step_start,
+                "tokens/seen": (time.time() - step_start) * tps/1000,
+            }
+            if grad_accum_steps is not None:
+                log_dict["train/grad_accum_steps"] = grad_accum_steps
+            if config.device == "cuda":
+                log_dict["perf/max_mem_allocated_mb"] = (
+                    torch.cuda.max_memory_allocated() / 1e6
+                )
+                log_dict["perf/max_mem_reserved_mb"] = (
+                    torch.cuda.max_memory_reserved() / 1e6
+                )
+            wandb.log(log_dict, step=iter)
+            if config.device == "cuda":
+                torch.cuda.reset_peak_memory_stats()
+        
         
 
 
@@ -411,5 +434,6 @@ finally:
     if distributed_initialized and dist.is_initialized():
         dist.destroy_process_group()
     print("Training finished or interrupted.")
+
 
 
