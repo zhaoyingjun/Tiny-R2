@@ -6,7 +6,7 @@ import torch
 # Training parameters
 # -------------------------
 batch_size = 8
-ctx_len = 1024          # context length
+ctx_len = 2048          # context length
 eval_interval = 20
 grad_accum = 4
 max_grad_norm=1.0
@@ -15,16 +15,16 @@ lr = 1e-3
 min_lr = 1e-4
 dropout = 0.2
 
-max_iters = 200
+max_iters = 20000
 eval_iters = 20
-warmup_iters = 10
+warmup_iters = 100
 
 resume = False
 res_path = ""
 
 data_dir = "tokenized_data"
 
-info_levl=2 #1:model parameters and Optimizer and  MoE / Router Info and mhc / mhc Info.2:ALL
+info_levl=1 #1:model parameters and Optimizer and  MoE / Router Info and mhc / mhc Info.2:ALL
 
 # -------------------------
 # Model parameters
@@ -32,13 +32,13 @@ info_levl=2 #1:model parameters and Optimizer and  MoE / Router Info and mhc / m
 n_embd = 256
 n_head = 16
 n_layer = 4
-n_experts = 32
+n_experts = 128
 num_exp=4
 shared_experts=1
 use_expert_bias = 'True'
-types = ['mlp', 'moe', 'mlp', 'moe']
-attention_types=['full','DSA']
-hc=False
+types = ['moe']
+attention_types=['DSA']
+hc=True
 vocab_size = 256
 init_moe_scaling = 1.25
 
