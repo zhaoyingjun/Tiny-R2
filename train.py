@@ -18,8 +18,7 @@ import torch.distributed as dist
 import model
 from model import Transformer
 from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
-import plot
-from plot import plot_loss
+ 
 
 from muon import Muon
 import config
@@ -434,6 +433,7 @@ finally:
     if distributed_initialized and dist.is_initialized():
         dist.destroy_process_group()
     print("Training finished or interrupted.")
+
 
 
 
