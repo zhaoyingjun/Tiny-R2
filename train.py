@@ -424,19 +424,13 @@ try:
                     torch.cuda.max_memory_reserved() / 1e6
                 )
             wandb.log(log_dict, step=iter)
-            if config.device == "cuda":
-                torch.cuda.reset_peak_memory_stats()
-        
-        
-
-
-
 
 
 finally:
     if distributed_initialized and dist.is_initialized():
         dist.destroy_process_group()
     print("Training finished or interrupted.")
+
 
 
 
