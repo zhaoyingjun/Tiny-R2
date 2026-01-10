@@ -36,7 +36,7 @@ parser.add_argument('--n_head', type=int, default=config.n_head)
 parser.add_argument('--n_layer', type=int, default=config.n_layer)
 parser.add_argument('--n_experts', type=int, default=config.n_experts)
 parser.add_argument('--hc', type=str, default=config.hc)
-parser.add_argument('--attention_types', type=list, default=config.attention_types)
+parser.add_argument('--attention_types', type=str, default=config.attention_types)
 
 
 args = parser.parse_args()
@@ -94,7 +94,7 @@ ns_steps=config.ns_steps
 ns_eps=config.ns_eps
 ns_coeffs=config.ns_coeffs
 
-         
+print(type(config.attention_types))         
            
 
 import wandb
@@ -351,8 +351,8 @@ try:
                 'val_losses_history': val_losses_history,
                 'config': model.config
             }
-            if losses['val'] < 1.27:
-                torch.save(checkpoint,f'checkpoints/check_{iter}.pt')
+            #if losses['val'] < 1.27:
+               # torch.save(checkpoint,f'checkpoints/check_{iter}.pt')
     
         
         
@@ -430,7 +430,6 @@ finally:
     if distributed_initialized and dist.is_initialized():
         dist.destroy_process_group()
     print("Training finished or interrupted.")
-
 
 
 
