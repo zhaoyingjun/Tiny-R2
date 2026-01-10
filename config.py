@@ -15,8 +15,8 @@ lr = 1e-3
 min_lr = 1e-4
 dropout = 0.2
 
-max_iters = 20000
-eval_iters = 20
+max_iters = 1000
+eval_iters = 2
 warmup_iters = 100
 
 resume = False
@@ -37,7 +37,7 @@ num_exp=4
 shared_experts=1
 use_expert_bias = 'True'
 types = ['moe']
-attention_types=['DSA']
+attention_types=['full']
 hc=True
 vocab_size = 256
 init_moe_scaling = 1.25
