@@ -36,7 +36,8 @@ parser.add_argument('--n_head', type=int, default=config.n_head)
 parser.add_argument('--n_layer', type=int, default=config.n_layer)
 parser.add_argument('--n_experts', type=int, default=config.n_experts)
 parser.add_argument('--hc', type=str, default=config.hc)
-parser.add_argument('--attention_types', type=str, default=config.attention_types)
+parser.add_argument('--mhc', type=str, default=config.mhc)
+parser.add_argument('--attention_types',  nargs="+", type=str, default=config.attention_types)
 
 
 args = parser.parse_args()
@@ -52,6 +53,7 @@ config.n_head=args.n_head
 config.n_layer=args.n_layer
 config.n_experts=args.n_experts
 config.hc=args.hc
+config.mhc=args.mhc
 config.attention_types=args.attention_types
 
 
