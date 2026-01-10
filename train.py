@@ -51,6 +51,8 @@ config.n_embd=args.n_embd
 config.n_head=args.n_head
 config.n_layer=args.n_layer
 config.n_experts=args.n_experts
+config.hc=args.hc
+config.attention_types=args.attention_types
 
 
 
@@ -435,6 +437,7 @@ finally:
     if distributed_initialized and dist.is_initialized():
         dist.destroy_process_group()
     print("Training finished or interrupted.")
+
 
 
 
