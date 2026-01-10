@@ -35,8 +35,8 @@ parser.add_argument('--n_embd', type=int, default=config.n_embd)
 parser.add_argument('--n_head', type=int, default=config.n_head)
 parser.add_argument('--n_layer', type=int, default=config.n_layer)
 parser.add_argument('--n_experts', type=int, default=config.n_experts)
-parser.add_argument('--hc', type=int, default=config.hc)
-parser.add_argument('--attention_types', type=int, default=config.attention_types)
+parser.add_argument('--hc', type=str, default=config.hc)
+parser.add_argument('--attention_types', type=list, default=config.attention_types)
 
 
 args = parser.parse_args()
@@ -430,6 +430,7 @@ finally:
     if distributed_initialized and dist.is_initialized():
         dist.destroy_process_group()
     print("Training finished or interrupted.")
+
 
 
 
