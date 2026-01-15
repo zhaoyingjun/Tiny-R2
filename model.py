@@ -11,8 +11,6 @@ from value_residual import ValueResidualState
 
 
 
-
-
 configs = {
     "n_embd": 256,
     "n_head": 16,
@@ -1010,14 +1008,4 @@ class Transformer(nn.Module):
 
                     block.ffn.expert_bias.add_(update_rate * torch.sign(e_i)) # update step
 
-    def estimate_mfu(self, params, fwdbwd_per_iter, dt):
-        N = params
-        L, H, Q, T = config['n_layer'], config['n_head'], config['n_embd']//config['n_head'], config['ctx_len']
-        flops_per_token = 6*N + 12*L*H*Q*T # fix recalc for MoE
-        flops_per_fwdbwd = flops_per_token * T
-        flops_per_iter = flops_per_fwdbwd * fwdbwd_per_iter
-        flops_achieved = flops_per_iter * (1.0/dt) # per second
-        flops_promised = 65e12 # 65 tflops for a t4
-        mfu = flops_achieved / flops_promised
-        return mfu
 
