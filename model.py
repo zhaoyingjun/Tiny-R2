@@ -22,7 +22,6 @@ configs = {
     "vocab_size": 65,
     "ctx_len": 2048,
     "init_moe_scaling": 1.25,
-    "type": ['mlp', 'moe', 'mlp', 'moe'],
     "device": 'cuda' if torch.cuda.is_available() else 'cpu',
     "hc_num_streams" : 4,
     "hc_num_fracs" :1,
@@ -1021,3 +1020,4 @@ class Transformer(nn.Module):
         flops_promised = 65e12 # 65 tflops for a t4
         mfu = flops_achieved / flops_promised
         return mfu
+
