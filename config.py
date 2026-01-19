@@ -5,7 +5,7 @@ import torch
 # -------------------------
 # Training parameters
 # -------------------------
-batch_size = 8
+batch_size = 1
 ctx_len = 2048          # context length
 eval_interval = 20
 grad_accum = 4
@@ -32,14 +32,14 @@ info_levl=1 #1:model parameters and Optimizer and  MoE / Router Info and mhc / m
 n_embd = 256
 n_head = 16
 n_layer = 4
-n_experts = 128
+n_experts = 32
 num_exp=4
 shared_experts=1
 use_expert_bias = 'True'
 types = ['moe']
 attention_types=['full']
 hc=True
-vocab_size = 256
+vocab_size = 50257
 init_moe_scaling = 1.25
 
 device = 'cuda' 
@@ -74,6 +74,7 @@ ns_steps = 5
 ns_eps = 1e-7
 ns_coeffs = (3.0, -3.2, 1.2)
 v_residual = False
+
 
 
 
