@@ -17,7 +17,7 @@ configs = {
     "n_layer": 4,
     "n_experts": 32,
     "dropout": 0.2,
-    "vocab_size": 65,
+    "vocab_size": 256,
     "ctx_len": 2048,
     "init_moe_scaling": 1.25,
     "device": 'cuda' if torch.cuda.is_available() else 'cpu',
@@ -837,7 +837,7 @@ class Transformer(nn.Module):
             temperature = 1e-6
 
         # Determine if vocabulary masking is needed
-        model_vocab_size = config['vocab_size']
+        model_vocab_size = config.vocab_size
         use_vocab_mask = False
         effective_vocab_size = model_vocab_size
         if tiktoken_vocab_size is not None:
@@ -853,7 +853,7 @@ class Transformer(nn.Module):
         for _ in range(max_new_tokens):
             # Crop the context if it exceeds the maximum length
             # Use max() to handle initial prompts shorter than ctx_len
-            start_pos = max(0, idx.size(1) - config['ctx_len'])
+            start_pos = max(0, idx.size(1) - config.ctx_len)
             idx_cond = idx[:, start_pos:] # shape (B, min(T, ctx_len))
 
             # Forward pass to get logits for the next token
