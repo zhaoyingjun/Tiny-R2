@@ -391,7 +391,7 @@ for it in range(max_iters):
                 'iter': it,
                 'train_losses_history': train_losses_history,
                 'val_losses_history': val_losses_history,
-                'config': model.config
+                #'config': model.config
             }
         if val_loss < 5.27:
             torch.save(checkpoint,f'checkpoints/check_{it}.pt')
