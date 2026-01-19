@@ -11,30 +11,6 @@ from value_residual import ValueResidualState
 
 
 
-configs = {
-    "n_embd": 256,
-    "n_head": 16,
-    "n_layer": 4,
-    "n_experts": 32,
-    "dropout": 0.2,
-    "vocab_size": 256,
-    "ctx_len": 2048,
-    "init_moe_scaling": 1.25,
-    "device": 'cuda' if torch.cuda.is_available() else 'cpu',
-    "hc_num_streams" : 4,
-    "hc_num_fracs" :1,
-    "hc_disable" : 'False',
-    "mhc" :'True',
-    "sinkhorn_iters":10,
-    "sinkhorn_tau" :0.05,
-    "mhc_h_res_proj": 'sinkhorn',
-    "ns_steps" :5,
-    "ns_eps" :1e-7,
-    "ns_coeffs" : (3.0, -3.2, 1.2),
-    "v_residual":'False'
-
-
-}
 
 
 
@@ -725,7 +701,7 @@ class Block(nn.Module):
 class Transformer(nn.Module):
     def __init__(self):
         super().__init__()
-        self.config = configs
+       
         self.init_hc, self.expand_stream, self.reduce_stream = (
             get_init_and_expand_reduce_stream_functions(
                 config.hc_num_streams,
@@ -1007,5 +983,6 @@ class Transformer(nn.Module):
                     e_i = c_i - c_i_bar # Load violation error
 
                     block.ffn.expert_bias.add_(update_rate * torch.sign(e_i)) # update step
+
 
 
