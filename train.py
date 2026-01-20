@@ -327,6 +327,8 @@ def print_detailed_summary(model, optimizers):
 
 
 
+ckpt_dir = "checkpoints"
+os.makedirs(ckpt_dir, exist_ok=True)
 
 
 
@@ -408,3 +410,4 @@ for it in range(max_iters):
     }, step=it)
 
 print("✅ Training finished.")
+
