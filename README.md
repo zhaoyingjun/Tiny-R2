@@ -614,9 +614,9 @@ torch.optim.AdamW(
 
 本文档配套的架构图文件：
 
-1. **model_architecture.png** - 完整模型架构图
-2. **model_components.png** - 组件详细说明
-3. **model_dataflow.png** - 训练/推理数据流
+1. **model_architecture.png** - 完整模型架构图,地址https://www.kimi.com/apiv2-files/sign-obj/kimi-fs%2Ffiles%2Fblob%2F58f55f3dfac4a7e9f1cce717b1c3e37c766a23d16df9cbb7467f0be101989a2d?filename=image.png&sig=gEC-OkYMeGCVS8yDn3YJXjW2JHfv06G_naiHDzDoj2M=&t=o
+2. **model_components.png** - 组件详细说明，地址https://www.kimi.com/apiv2-files/sign-obj/kimi-fs%2Ffiles%2Fblob%2F19aecbbc9583870b731942ab0d9b8471ad5a3b40f979a454a19af4f108ab93be?filename=image.png&sig=RM4Y_-c4gLuVVFrQT82bKlBszXIR2lpN7TkUfH80040=&t=o
+3. **model_dataflow.png** - 训练/推理数据流，地址 https://www.kimi.com/apiv2-files/sign-obj/kimi-fs%2Ffiles%2Fblob%2F436124539ed0c8926da28bf8d4c57ffecd4a04a3051c19b480f78ca76bf8fd5a?filename=image.png&sig=6HLiZIyrv0RUQ6iyRt5_kvifvWPgFcvewDi_wqPNegM=&t=o
 
 ---
 
