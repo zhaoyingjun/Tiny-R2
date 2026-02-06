@@ -4,7 +4,7 @@ https://wandb.ai/yingjun-xuda/Tiny-R2/reports/train-loss-26-01-20-21-52-23---Vml
 
 ## 概述
 
-本文档详细描述了一个融合多种前沿技术的Tiny-R2模型架构。该模型集成了以下核心创新：
+本文档详细描述了一个融合多种前沿技术的Tiny-R2模型架构，根据Deepseek最新的论文，集成DSA、mHC、DSMoE的结构。该模型集成了以下核心创新：
 
 - **MLA-NSA 混合注意力**: 结合Multi-head Latent Attention的压缩技术和Native Sparse Attention的稀疏性
 - **Hyper-connections**: 多头流处理机制，支持HC、mHC等选择
