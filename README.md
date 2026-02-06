@@ -11,7 +11,7 @@ https://wandb.ai/yingjun-xuda/Tiny-R2/reports/train-loss-26-01-20-21-52-23---Vml
 - **DSMoE**: DeepSpeek混合专家层，支持Deepseek类的moe层构建
 - **Value Residual Learning**: 跨层值向量残差学习
 - **RoPE**: 旋转位置编码
-- - **Muon优化器**: 采用Muon优化节约HBM、加速收敛速度
+- **Muon与AdamW优化器**: 采用Muon优化节约HBM、加速收敛速度，采用AdamW保证稳定性，尤其是对于边缘数据的收敛上更稳定。
 
 ---
 
