@@ -4,13 +4,14 @@ https://wandb.ai/yingjun-xuda/Tiny-R2/reports/train-loss-26-01-20-21-52-23---Vml
 
 ## 概述
 
-本文档详细描述了一个融合多种前沿技术的Tiny-R2模型架构，根据Deepseek最新的论文，集成DSA、mHC、DSMoE的结构。该模型集成了以下核心创新：
+本文档详细描述了一个融合多种前沿技术的Tiny-R2模型架构，根据Deepseek最新的论文，集成DSA、mHC、DSMoE的结构，在优化器上采用Muon和AdamW混合优化器架构。该模型集成了以下前沿创新：
 
 - **MLA-NSA 混合注意力**: 结合Multi-head Latent Attention的压缩技术和Native Sparse Attention的稀疏性
 - **Hyper-connections**: 多头流处理机制，支持HC、mHC等选择
 - **DSMoE**: DeepSpeek混合专家层，支持Deepseek类的moe层构建
 - **Value Residual Learning**: 跨层值向量残差学习
 - **RoPE**: 旋转位置编码
+- - **Muon优化器**: 采用Muon优化节约HBM、加速收敛速度
 
 ---
 
@@ -221,7 +222,7 @@ v_selected = selection_v(selected_tokens)
 k_selected_rope = apply_rope(k_selected[:,:,:,nope_head_dim:])
 ```
 
-### 3.4 Branch 3: 滑动窗口 (NSA)
+### 3.4 Branch 3: 滑动窗口 (SWA)
 
 ```python
 # 提取滑动窗口内的token
@@ -260,7 +261,7 @@ self.v_cache[:, :, cache_filled:new_filled] = value
 
 ---
 
-## 4. DSMoE (DeepSpeed 混合专家)
+## 4. DSMoE (DeepSpeeK 混合专家)
 
 ### 4.1 架构
 
@@ -345,7 +346,7 @@ def update_expert_biases(all_router_weights, update_rate):
 
 ---
 
-## 5. Hyper-connections (超连接)
+## 5. Hyper-connections (超连接,支持mHC)
 
 ### 5.1 原理
 
@@ -570,7 +571,7 @@ Returns: idx, total_kv_cache_size_gb
 | | `num_tokens_to_keep` | - | 保留的细粒度token数 |
 | **MoE** | `n_experts` | - | 专家总数 |
 | | `num_exp` | - | 每token激活的专家数 |
-| **Hyper-conn** | `mhc` | - | 多头连接数 |
+| **Hyper-conn** | `mhc` | - | 选择HC或mHC |
 | | `sinkhorn_iters` | - | Sinkhorn迭代次数 |
 | | `sinkhorn_tau` | - | Sinkhorn温度 |
 | | `hc_num_streams` | - | 流数量 |
