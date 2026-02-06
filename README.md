@@ -144,7 +144,7 @@ class CausalSelfAttention(nn.Module):
 ┌───────────────┐      ┌───────────────┐      ┌───────────────┐
 │  Branch 1     │      │  Branch 2     │      │  Branch 3     │
 │ Coarse-grained│      │ Token Select  │      │ Sliding Window│
-│ Compression   │      │ (NSA)         │      │ (NSA)         │
+│ Compression   │      │ (NSA)         │      │ (SWA)         │
 │ (MLA)         │      │               │      │               │
 └───────────────┘      └───────────────┘      └───────────────┘
         │                        │                        │
