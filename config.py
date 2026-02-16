@@ -37,7 +37,7 @@ num_exp=4
 shared_experts=1
 use_expert_bias = 'True'
 types = ['moe']
-attention_types=['full']
+attention_types=['FULL']
 hc=True
 vocab_size = 50257
 init_moe_scaling = 1.25
@@ -74,6 +74,11 @@ ns_steps = 5
 ns_eps = 1e-7
 ns_coeffs = (3.0, -3.2, 1.2)
 v_residual = False
+# NSA Branch Configuration
+nsa_use_branch1 = True   # Coarse-grained compression (MLA)
+nsa_use_branch2 = True   # Token selection (NSA)
+nsa_use_branch3 = True   # Sliding window (NSA)
+attention_mode=['SWA','NSA','DSA']
 
 
 
