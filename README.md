@@ -72,8 +72,8 @@ Token Embedding + Positional Embedding
                       ▼                               |
             Output + router_weights                   |
                       ↓                               |
+         Hyper-Connection Reduce Stream               |
 -----------------------------------------------------
-         Hyper-Connection Reduce Stream
                       ↓
                RMSNorm + LM Head
                        ↓
