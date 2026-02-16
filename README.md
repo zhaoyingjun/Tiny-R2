@@ -1,9 +1,7 @@
-# Tiny-R2
-A better combination: DSA, mHC, and DSMoE  similar to DeepSeek R2.
+# Tiny-R2 A better combination: DSA/SWA/MLA, mHC, and DSMoE 
 
 # Tiny-R2 模型架构与训练流程文档
 
-> 本文档基于 [Tiny-R2](https://github.com/zhaoyingjun/Tiny-R2) 项目的 `model.py` 和 `train.py` 代码分析生成
 
 ---
 
