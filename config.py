@@ -6,20 +6,20 @@ import torch
 # Training parameters
 # -------------------------
 batch_size = 1
-ctx_len = 2048          # context length
+ctx_len = 1536          # context length
 eval_interval = 20
-grad_accum = 4
+grad_accum = 8
 max_grad_norm=1.0
 
-lr = 1e-3
-min_lr = 1e-4
+lr = 1e-5
+min_lr = 2e-7
 dropout = 0.2
 
 max_iters = 1000
 eval_iters = 2
-warmup_iters = 100
+warmup_iters = 500
 
-resume = False
+resume = True
 res_path = ""
 
 data_dir = "tokenized_data"
@@ -29,11 +29,11 @@ info_levl=1 #1:model parameters and Optimizer and  MoE / Router Info and mhc / m
 # -------------------------
 # Model parameters
 # -------------------------
-n_embd = 256
+n_embd = 384
 n_head = 16
 n_layer = 4
 n_experts = 32
-num_exp=4
+num_exp=8
 shared_experts=1
 use_expert_bias = 'True'
 types = ['moe']
@@ -47,7 +47,7 @@ device = 'cuda'
 rms_norm_eps=1e-6
 block_size=16
 
-num_tokens_to_keep=256
+num_tokens_to_keep=128
 
 window_size=128
 
@@ -75,9 +75,9 @@ ns_eps = 1e-7
 ns_coeffs = (3.0, -3.2, 1.2)
 v_residual = False
 # NSA Branch Configuration
-nsa_use_branch1 = True   # Coarse-grained compression (MLA)
-nsa_use_branch2 = True   # Token selection (NSA)
-nsa_use_branch3 = True   # Sliding window (NSA)
+nsa_use_branch1 = 1   # Coarse-grained compression (MLA)
+nsa_use_branch2 = 1   # Token selection (NSA)
+nsa_use_branch3 = 1   # Sliding window (NSA)
 attention_mode=['SWA','NSA','DSA']
 
 
