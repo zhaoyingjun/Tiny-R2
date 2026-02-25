@@ -31,13 +31,13 @@ info_levl=1 #1:model parameters and Optimizer and  MoE / Router Info and mhc / m
 # -------------------------
 n_embd = 384
 n_head = 16
-n_layer = 4
+n_layer = 12
 n_experts = 32
 num_exp=8
 shared_experts=1
 use_expert_bias = 'True'
 types = ['moe']
-attention_types=['FULL']
+attention_types=['Spares']
 hc=True
 vocab_size = 50257
 init_moe_scaling = 1.25
