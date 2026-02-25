@@ -95,7 +95,10 @@ pip install git+https://github.com/KellerJordan/Muon
 ```
 python train.py --n_layer 12 --n_embd 384 --hc 'True' --mhc 'True' --n_experts 32  --max_iters 10000 --attention_types 'Spares' --batch_size 16 --ctx_len 1536 --hf_dataset 'Skylion007/openwebtext' --resume True --save_best_only True
 ```
-
+### 2.3 验证模型训练效果，PPL
+```
+python evaluate.py --checkpoint checkpoints/best_model_step_4720.pt
+```
 
 ## 核心组件详解
 
