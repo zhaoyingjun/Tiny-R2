@@ -5,7 +5,7 @@ import os
 from datasets import load_dataset
 from tqdm import tqdm
 from transformers import AutoTokenizer
-
+import argparse
 # 添加项目路径
 sys.path.insert(0, "/content/Tiny-R2")
 
@@ -245,8 +245,14 @@ def quick_test(model, tokenizer, device='cuda'):
 
 def main():
     # 配置
-    CHECKPOINT_PATH = "/content/Tiny-R2/checkpoints/best_model_step_4720.pt"
-    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--checkpoint', type=str, required=True, help="模型权重路径")
+    parser.add_argument('--device', type=str, default='cuda', help="推理设备")
+    args = parser.parse_args()
+
+    DEVICE = args.device
+    CHECKPOINT_PATH=args.checkpoint
+
     
     print(f"Using device: {DEVICE}\n")
     
