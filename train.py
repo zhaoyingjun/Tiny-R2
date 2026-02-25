@@ -560,6 +560,7 @@ def train(args):
     total_params = print_detailed_summary(model, optimizers, start_iter, max_iters, best_val_loss)
     
     # Training state
+    start_iter=start_iter+1000
     last_saved_step = start_iter
     
     print("🚀 Starting training" if start_iter == 0 else f"🚀 Resuming training from iteration {start_iter}")
