@@ -82,7 +82,7 @@ Token Embedding + Positional Embedding
 
 ---
 
-##快速启动
+## 快速启动
 ### 2.1 安装依赖
 ```
 pip install tiktoken datasets transformers huggingface_hub
