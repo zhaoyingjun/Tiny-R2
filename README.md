@@ -82,6 +82,21 @@ Token Embedding + Positional Embedding
 
 ---
 
+##快速启动
+### 2.1 安装依赖
+```
+pip install tiktoken datasets transformers huggingface_hub
+pip install git+https://github.com/KellerJordan/Muon
+
+```
+
+### 2.2 启动训练
+
+```
+python train.py --n_layer 12 --n_embd 384 --hc 'True' --mhc 'True' --n_experts 32  --max_iters 10000 --attention_types 'Spares' --batch_size 16 --ctx_len 1536 --hf_dataset 'Skylion007/openwebtext' --resume True --save_best_only True
+```
+
+
 ## 核心组件详解
 
 ### 3.1 注意力机制
@@ -443,4 +458,4 @@ max_iters = 100000
 
 ---
 
-*文档生成时间: 2026-02-16*
+
