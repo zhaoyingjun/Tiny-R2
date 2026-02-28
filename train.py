@@ -35,6 +35,8 @@ def parse_arguments():
     parser.add_argument('--max_iters', type=int, default=config.max_iters)
     parser.add_argument('--eval_iters', type=int, default=config.eval_interval)
     parser.add_argument('--warmup_iters', type=int, default=config.warmup_iters)
+    # Tokenizer settings
+    parser.add_argument('--tokenizer_name', type=str, default="gpt-2")
     
     # Data and model paths
     parser.add_argument('--data_dir', type=str, default=config.data_dir)
@@ -512,7 +514,16 @@ def train(args):
     scaler = amp.GradScaler(enabled=('cuda' in device))
     
     # Initialize tokenizer and update vocab size
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name)
+    special_tokens = {
+
+    "additional_special_tokens": [
+        "<|assistant|>",
+        "<|user|>"
+    ]
+    }
+
+    num_added = tokenizer.add_special_tokens(special_tokens)
     tokenizer.pad_token = tokenizer.eos_token
     config.vocab_size = tokenizer.vocab_size
     
