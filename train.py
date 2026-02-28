@@ -19,6 +19,8 @@ from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
 import config
 import wandb
 
+import gc
+
 
 # =============================================================================
 # Argument Parsing
@@ -146,7 +148,31 @@ def load_checkpoint(model, optimizers, scheduler, checkpoint_path, device):
     checkpoint = torch.load(checkpoint_path, map_location=device)
     
     # Load model state
-    model.load_state_dict(checkpoint['model'])
+    model_state = checkpoint['model']
+    
+    # Handle compiled model (torch.compile) - check if we need to wrap or unwrap keys
+    # Case 1: Checkpoint has _orig_mod.* keys but model is not compiled
+    # Case 2: Checkpoint has normal keys but model is compiled
+    
+    is_model_compiled = hasattr(model, '_orig_mod')
+    is_checkpoint_compiled = any(k.startswith('_orig_mod.') for k in model_state.keys())
+    
+    if is_model_compiled and not is_checkpoint_compiled:
+        # Model is compiled, checkpoint is not - wrap keys with _orig_mod.
+        model_state = {f'_orig_mod.{k}': v for k, v in model_state.items()}
+        print("  -> Wrapped state dict keys for compiled model")
+    elif not is_model_compiled and is_checkpoint_compiled:
+        # Model is not compiled, checkpoint is - unwrap keys
+        model_state = {k.replace('_orig_mod.', ''): v for k, v in model_state.items()}
+        print("  -> Unwrapped state dict keys for non-compiled model")
+    
+    # Load with strict=False to handle any remaining mismatches
+    missing_keys, unexpected_keys = model.load_state_dict(model_state, strict=False)
+    
+    if missing_keys:
+        print(f"  -> Warning: Missing keys: {missing_keys}")
+    if unexpected_keys:
+        print(f"  -> Warning: Unexpected keys: {unexpected_keys}")
     
     # Load optimizer states
     if 'optimizer_states' in checkpoint and checkpoint['optimizer_states']:
@@ -515,7 +541,15 @@ def train(args):
     
     # Initialize tokenizer and update vocab size
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name)
-   
+    special_tokens = {
+
+    "additional_special_tokens": [
+        "<|assistant|>",
+        "<|user|>"
+    ]
+    }
+
+    #num_added = tokenizer.add_special_tokens(special_tokens)
     tokenizer.pad_token = tokenizer.eos_token
     config.vocab_size = tokenizer.vocab_size
     
@@ -629,6 +663,34 @@ def train(args):
                   f"lr={scheduler.get_last_lr()[0]:.6f}")
             
             val_losses_history.append(val_loss)
+            #Check if loss is nan
+            #val_loss=torch.tensor(float("nan"))
+            if not torch.isfinite(val_loss):
+                print(f"NaN detected at step {iteration}, reloading checkpoint...")
+
+                gc.collect()
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                time.sleep(7)
+                optimizers = model.configure_optimizers(weight_decay, learning_rate, device)
+                adamw_optimizer = optimizers[-1]  # AdamW is always the last optimizer
+    
+                # Create scheduler (will be updated if resuming)
+                scheduler = create_scheduler(adamw_optimizer, warmup_iters, max_iters, min_lr)
+                checkpoint_path = find_latest_checkpoint(checkpoint_dir)[0]
+    
+                # Load checkpoint if resuming
+                start_iter, train_losses_history, val_losses_history, best_val_loss, loaded_wandb_id = \
+            load_checkpoint(model, optimizers, scheduler, checkpoint_path, device)
+                
+                
+                start_iter=start_iter+1000
+                if loaded_wandb_id and not args.wandb_run_id:
+                  current_wandb_id = loaded_wandb_id
+                  print(f"Restored WandB run ID: {current_wandb_id}")
+
+
+                continue  # 跳过当前 step
             
             # Check if this is the best model
             is_best = val_loss < best_val_loss
@@ -719,4 +781,3 @@ def train(args):
 if __name__ == "__main__":
     args = parse_arguments()
     train(args)
-
