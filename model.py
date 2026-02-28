@@ -771,7 +771,7 @@ class Transformer(nn.Module):
         return logits, loss, all_router_weights
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None, tiktoken_vocab_size=None):
+    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None,top_p=None, tiktoken_vocab_size=None):
         """
         Generates sequences of tokens autoregressively.
         """
@@ -812,6 +812,22 @@ class Transformer(nn.Module):
 
             # Sample next token
             probs = F.softmax(logits, dim=-1)
+            
+            # Top-p nucleus sampling
+            if top_p is not None and top_p > 0:
+               sorted_probs, sorted_indices = torch.sort(probs, descending=True)
+               cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+
+            # remove tokens with cumulative prob above threshold
+               sorted_indices_to_remove = cumulative_probs > top_p
+               sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+               sorted_indices_to_remove[..., 0] = 0
+
+               sorted_probs[sorted_indices_to_remove] = 0
+               probs = torch.zeros_like(probs).scatter(-1, sorted_indices, sorted_probs)
+
+               probs = probs / probs.sum(dim=-1, keepdim=True)
+
             idx_next = torch.multinomial(probs, num_samples=1)
             idx = torch.cat((idx, idx_next), dim=1)
 
