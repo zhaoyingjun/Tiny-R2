@@ -515,15 +515,7 @@ def train(args):
     
     # Initialize tokenizer and update vocab size
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name)
-    special_tokens = {
-
-    "additional_special_tokens": [
-        "<|assistant|>",
-        "<|user|>"
-    ]
-    }
-
-    num_added = tokenizer.add_special_tokens(special_tokens)
+   
     tokenizer.pad_token = tokenizer.eos_token
     config.vocab_size = tokenizer.vocab_size
     
@@ -727,3 +719,4 @@ def train(args):
 if __name__ == "__main__":
     args = parse_arguments()
     train(args)
+
