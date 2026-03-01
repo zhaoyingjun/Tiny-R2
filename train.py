@@ -555,7 +555,7 @@ def train(args):
     
     # Load dataset
     print(f"Loading HF dataset: {args.hf_dataset}")
-    raw_dataset = load_dataset(args.hf_dataset, split=args.hf_split)
+    raw_dataset = load_dataset(args.hf_dataset, split=args.hf_split,streaming=True)
     print(raw_dataset)
     
     # Create token buffer (restore state if resuming)
@@ -665,7 +665,7 @@ def train(args):
             val_losses_history.append(val_loss)
             #Check if loss is nan
             #val_loss=torch.tensor(float("nan"))
-            if not torch.isfinite(val_loss):
+            if not torch.isfinite(torch.tensor(val_loss)):
                 print(f"NaN detected at step {iteration}, reloading checkpoint...")
 
                 gc.collect()
