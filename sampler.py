@@ -58,6 +58,7 @@ def main():
     parser.add_argument('--max_new_tokens', type=int, default=50, help="生成长度")
     parser.add_argument('--temperature', type=float, default=1.0, help="采样温度")
     parser.add_argument('--top_k', type=int, default=None, help="Top-k 采样")
+    parser.add_argument('--top_p', type=float, default=None, help="Top-p 采样概率")
     parser.add_argument('--device', type=str, default='cuda', help="推理设备")
     args = parser.parse_args()
 
