@@ -460,7 +460,7 @@ class Attn(nn.Module):
             k_selected, v_selected = self._branch2_selection(x)
             output_2 = F.scaled_dot_product_attention(
                 q_recombined, k_selected, v_selected,
-                is_causal=False, dropout_p=self.dropout if self.training else 0
+                is_causal=True, dropout_p=self.dropout if self.training else 0
             )
             branch_outputs.append(output_2 * branch_weights[:, branch_idx:branch_idx+1].view(B, 1, 1, 1))
             branch_idx += 1
