@@ -183,8 +183,8 @@ class Attn(nn.Module):
 
         # Branch configuration (add to your config.py):
         # config.nsa_use_branch1 = True  # Coarse-grained compression (MLA)
-        # config.nsa_use_branch2 = True  # Token selection (NSA)
-        # config.nsa_use_branch3 = True  # Sliding window (NSA)
+        # config.nsa_use_branch2 = True  # Token selection (DSA)
+        # config.nsa_use_branch3 = True  # Sliding window (SWA)
         self.use_branch1 = getattr(config, 'nsa_use_branch1', True)
         self.use_branch2 = getattr(config, 'nsa_use_branch2', True)
         self.use_branch3 = getattr(config, 'nsa_use_branch3', True)
