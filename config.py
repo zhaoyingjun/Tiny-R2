@@ -76,10 +76,10 @@ ns_eps = 1e-7
 ns_coeffs = (3.0, -3.2, 1.2)
 v_residual = True
 # NSA Branch Configuration
-nsa_use_branch1 = 1   # Coarse-grained compression (MLA)
-nsa_use_branch2 = 1   # Token selection (DSA)
+nsa_use_branch1 = 1   # Coarse-grained compression (HCA)
+nsa_use_branch2 = 1   # Token selection (CSA)
 nsa_use_branch3 = 1   # Sliding window (SWA)
-attention_mode=['SWA','SWA','DSA','MLA','DSA','MLA','MLA','DSA','DSA','DSA','DSA','MLA']
+attention_mode=['SWA','SWA','CSA','HCA','CSA','HCA']
 
 
 
