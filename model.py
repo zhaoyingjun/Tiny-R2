@@ -10,6 +10,51 @@ from hyper_connections.hyper_connections import get_init_and_expand_reduce_strea
 from value_residual import ValueResidualState
 
 
+def softmax_token_compress(token_embeddings,compress_ratio,weight) -> torch.Tensor:
+    #print(token_embeddings.shape)
+    dims = token_embeddings.dim()
+    device = token_embeddings.device
+    dtype = token_embeddings.dtype
+    R = compress_ratio
+
+    # 安全权重
+    w = F.softmax(weight.to(dtype), dim=0)
+    w = w.view(1, 1, compress_ratio, 1)  # 自动匹配维度
+
+    # 提取长度
+    if dims == 3:
+        B, L, C = token_embeddings.shape
+    elif dims == 4:
+        B, H, L, C = token_embeddings.shape
+    else:
+        return token_embeddings  # 防止异常
+
+    # 从右分组（不改变外部维度）
+    groups = []
+    current = L
+    while current > 0:
+        start = max(0, current - R)
+        if dims == 3:
+            g = token_embeddings[:, start:current, :]
+        else:
+            g = token_embeddings[:, :, start:current, :]
+        groups.append(g)
+        current = start
+    groups = groups[::-1]
+
+    # 第一组 padding
+    if groups[0].size(-2) < R:
+        pad_len = R - groups[0].size(-2)
+        pad_shape = list(groups[0].shape)
+        pad_shape[-2] = pad_len
+        pad = torch.zeros(*pad_shape, device=device, dtype=dtype)
+        groups[0] = torch.cat([pad, groups[0]], dim=-2)
+
+    # 堆叠 + 加权
+    stacked = torch.stack(groups, dim=-3)
+    out = (stacked * w).sum(dim=-2)
+    return out
+
 # =============================================================================
 # Full Attention (Causal Self-Attention)
 # =============================================================================
@@ -179,6 +224,7 @@ class Attn(nn.Module):
         self.ctx_len = config.ctx_len
         self.rms_norm_eps = config.rms_norm_eps
         self.atten_mode=atten_mode
+        self.training=True
         
 
         # Branch configuration (add to your config.py):
@@ -208,40 +254,42 @@ class Attn(nn.Module):
         self.num_blocks = self.ctx_len // self.block_size
         self.window_size = config.window_size
         self.num_tokens_to_keep = config.num_tokens_to_keep
+        self.compress_weight_DSA = nn.Parameter(torch.randn(4))
+        self.compress_weight_MLA = nn.Parameter(torch.randn(128))
         
         if self.atten_mode=="SWA":
-          self.use_branch1,self.use_branch2,self.use_branch3=[1,0,1]
-        elif self.atten_mode=="NSA":
-          self.use_branch1,self.use_branch2,self.use_branch3=[1,1,0]
+          self.use_branch1,self.use_branch2,self.use_branch3=[0,0,1]
+        elif self.atten_mode=="DSA":
+          self.use_branch1,self.use_branch2,self.use_branch3=[0,1,1]
         else:
-          self.use_branch1,self.use_branch2,self.use_branch3=[1,1,1]
+          self.use_branch1,self.use_branch2,self.use_branch3=[1,0,1]
         
 
         # === Branch 1: Coarse-grained compression (MLA) ===
-        if self.use_branch1:
-            self.compress_q_linear = nn.Linear(self.n_embd, self.q_lora_rank, bias=False)
-            self.q_norm = nn.RMSNorm(self.q_lora_rank, eps=self.rms_norm_eps)
-            self.decompress_q_nope = nn.Linear(self.q_lora_rank, self.nope_dim, bias=False)
-            self.decompress_q_rope = nn.Linear(self.q_lora_rank, self.rope_dim, bias=False)
+      
+        self.compress_q_linear = nn.Linear(self.n_embd, self.q_lora_rank, bias=False)
+        self.q_norm = nn.RMSNorm(self.q_lora_rank, eps=self.rms_norm_eps)
+        self.decompress_q_nope = nn.Linear(self.q_lora_rank, self.nope_dim, bias=False)
+        self.decompress_q_rope = nn.Linear(self.q_lora_rank, self.rope_dim, bias=False)
 
-            self.compress_kv_linear = nn.Linear(self.n_embd, self.kv_lora_rank, bias=False)
-            self.kv_norm = nn.RMSNorm(self.kv_lora_rank, eps=self.rms_norm_eps)
-            self.decompress_k_nope = nn.Linear(self.kv_lora_rank, self.nope_dim, bias=False)
-            self.decompress_v_linear = nn.Linear(self.kv_lora_rank, self.value_dim, bias=False)
-            self.k_rope_linear = nn.Linear(self.n_embd, self.rope_head_dim, bias=False)
+        self.compress_kv_linear = nn.Linear(self.n_embd, self.kv_lora_rank, bias=False)
+        self.kv_norm = nn.RMSNorm(self.kv_lora_rank, eps=self.rms_norm_eps)
+        self.decompress_k_nope = nn.Linear(self.kv_lora_rank, self.nope_dim, bias=False)
+        self.decompress_v_linear = nn.Linear(self.kv_lora_rank, self.value_dim, bias=False)
+        self.k_rope_linear = nn.Linear(self.n_embd, self.rope_head_dim, bias=False)
 
-        # === Branch 2: Token Selection (NSA) ===
-        if self.use_branch2:
-            self.importance_scorer = nn.Linear(self.n_embd, 1, bias=False)
-            self.selection_k = nn.Linear(self.n_embd, self.n_head * (self.rope_head_dim + self.nope_head_dim), bias=False)
-            self.selection_v = nn.Linear(self.n_embd, self.value_dim, bias=False)
+        # === Branch 2: Token Selection (DSA) ===
+   
+        self.importance_scorer = nn.Linear(self.n_embd, 1, bias=False)
+        self.selection_k = nn.Linear(self.n_embd, self.n_head * (self.rope_head_dim + self.nope_head_dim), bias=False)
+        self.selection_v = nn.Linear(self.n_embd, self.value_dim, bias=False)
 
-        # === Branch 3: Sliding Window (NSA) ===
-        if self.use_branch3:
-            self.window_k = nn.Linear(self.n_embd, self.n_head * (self.rope_head_dim + self.nope_head_dim), bias=False)
-            self.window_v = nn.Linear(self.n_embd, self.value_dim, bias=False)
+        # === Branch 3: Sliding Window (SWA) ===
+        
+        self.window_k = nn.Linear(self.n_embd, self.n_head * (self.rope_head_dim + self.nope_head_dim), bias=False)
+        self.window_v = nn.Linear(self.n_embd, self.value_dim, bias=False)
 
-        # Token Compression (NSA) - needed for branch1 if used
+        # Token Compression (MLA) - needed for branch1 if used
         if self.use_branch1:
             self.block_compressor = nn.Sequential(
                 nn.Linear(self.block_size * self.n_embd, 4 * self.n_embd, bias=False),
@@ -266,7 +314,8 @@ class Attn(nn.Module):
         # RoPE
         self.rope = RoPE(self.rope_head_dim, device=self.device)
         self.freqs_cis = precompute_freqs_cis(self.rope_head_dim, self.ctx_len, self.device)
-
+    
+    
     def _compress_tokens(self, x):
         """Token compression mechanism from NSA."""
         B, T, C = x.size()
@@ -403,6 +452,7 @@ class Attn(nn.Module):
 
     def forward(self, x):
         B, T, C = x.size()
+        #print(x.size())
 
         # Prepare queries (always needed)
         q_recombined = self._prepare_queries(x)
@@ -416,47 +466,25 @@ class Attn(nn.Module):
 
         # Branch 1: Compression
         if self.use_branch1:
+            x=softmax_token_compress(x,128,self.compress_weight_MLA)
+            #print(x.size())
             k_recombined_1, value_1 = self._branch1_compression(x)
             
-            if self.training:
-                self.cache_filled = 0
-                output_1 = F.scaled_dot_product_attention(
+      
+            self.cache_filled = 0
+            output_1 = F.scaled_dot_product_attention(
                     q_recombined, k_recombined_1, value_1,
                     is_causal=True, dropout_p=self.dropout
                 )
-            else:
-                # Update cache
-                if self.k_cache is None or self.k_cache.size(0) != B:
-                    self.k_cache = torch.zeros(
-                        B, self.n_head, self.ctx_len, self.rope_head_dim + self.nope_head_dim,
-                        device=self.device, dtype=x.dtype
-                    )
-                    self.v_cache = torch.zeros(
-                        B, self.n_head, self.ctx_len, self.v_head_dim,
-                        device=self.device, dtype=x.dtype
-                    )
-                    self.cache_filled = 0
-
-                new_cache_filled = min(self.cache_filled + T, self.ctx_len)
-                k_to_cache = k_recombined_1[:, :, :new_cache_filled - self.cache_filled]
-                v_to_cache = value_1[:, :, :new_cache_filled - self.cache_filled]
-
-                self.k_cache[:, :, self.cache_filled:new_cache_filled] = k_to_cache
-                self.v_cache[:, :, self.cache_filled:new_cache_filled] = v_to_cache
-                self.cache_filled = new_cache_filled
-
-                k1 = self.k_cache[:, :, :self.cache_filled]
-                v1 = self.v_cache[:, :, :self.cache_filled]
-                
-                output_1 = F.scaled_dot_product_attention(
-                    q_recombined, k1, v1, is_causal=True, dropout_p=0
-                )
+            
             
             branch_outputs.append(output_1 * branch_weights[:, branch_idx:branch_idx+1].view(B, 1, 1, 1))
             branch_idx += 1
 
         # Branch 2: Selection
         if self.use_branch2:
+            x=softmax_token_compress(x,4,self.compress_weight_DSA)
+            #print(x.size())
             k_selected, v_selected = self._branch2_selection(x)
             output_2 = F.scaled_dot_product_attention(
                 q_recombined, k_selected, v_selected,
@@ -618,11 +646,11 @@ class Block(nn.Module):
         self.atten_types = config.attention_types[index % len(config.attention_types)]
         if self.atten_types == "FULL":
             self.attn = CausalSelfAttention(config)
-        elif self.atten_types == "Spares":
+        elif self.atten_types == "Sparse":
             self.atten_mode=config.attention_mode[index % len(config.attention_mode)]
             self.attn = Attn(self.atten_mode)
         else:
-            raise ValueError(f"Invalid Attention type: {self.atte_types}")
+            raise ValueError(f"Invalid Attention type: {self.atten_types}")
 
         # Select FFN type
         self.ffn_type = config.types[index % len(config.types)]
