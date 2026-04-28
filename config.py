@@ -5,10 +5,10 @@ import torch
 # -------------------------
 # Training parameters
 # -------------------------
-batch_size = 16
+batch_size = 8
 ctx_len = 2048          # context length
 eval_interval = 20
-grad_accum = 8
+grad_accum = 16
 max_grad_norm=1.0
 
 lr = 1.5e-4
