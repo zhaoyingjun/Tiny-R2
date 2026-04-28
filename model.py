@@ -227,10 +227,7 @@ class Attn(nn.Module):
         self.training=True
         
 
-        # Branch configuration (add to your config.py):
-        # config.nsa_use_branch1 = True  # Coarse-grained compression (MLA)
-        # config.nsa_use_branch2 = True  # Token selection (DSA)
-        # config.nsa_use_branch3 = True  # Sliding window (SWA)
+      
         self.use_branch1 = getattr(config, 'nsa_use_branch1', True)
         self.use_branch2 = getattr(config, 'nsa_use_branch2', True)
         self.use_branch3 = getattr(config, 'nsa_use_branch3', True)
@@ -239,7 +236,7 @@ class Attn(nn.Module):
         if not any([self.use_branch1, self.use_branch2, self.use_branch3]):
             raise ValueError("At least one NSA branch must be enabled!")
 
-        # MLA parameters
+       
         self.v_head_dim = 32
         self.kv_lora_rank = 32
         self.q_lora_rank = 3 * self.kv_lora_rank
@@ -249,23 +246,24 @@ class Attn(nn.Module):
         self.nope_dim = self.n_head * self.nope_head_dim
         self.rope_dim = self.n_head * self.rope_head_dim
 
-        # NSA parameters
+     
         self.block_size = config.block_size
         self.num_blocks = self.ctx_len // self.block_size
         self.window_size = config.window_size
         self.num_tokens_to_keep = config.num_tokens_to_keep
-        self.compress_weight_DSA = nn.Parameter(torch.randn(4))
-        self.compress_weight_MLA = nn.Parameter(torch.randn(128))
+        
         
         if self.atten_mode=="SWA":
           self.use_branch1,self.use_branch2,self.use_branch3=[0,0,1]
-        elif self.atten_mode=="DSA":
-          self.use_branch1,self.use_branch2,self.use_branch3=[0,1,1]
-        else:
-          self.use_branch1,self.use_branch2,self.use_branch3=[1,0,1]
+        elif self.atten_mode=="CSA":
+          self.use_branch1,self.use_branch2,self.use_branch3=[0,1,0]
+        elif self.atten_mode=="HCA":
+          self.use_branch1,self.use_branch2,self.use_branch3=[1,0,0]
         
 
-        # === Branch 1: Coarse-grained compression (MLA) ===
+        # === Branch 1: Coarse-grained compression (HCA) ===
+      
+        self.compress_weight_HCA = nn.Parameter(torch.randn(128))
       
         self.compress_q_linear = nn.Linear(self.n_embd, self.q_lora_rank, bias=False)
         self.q_norm = nn.RMSNorm(self.q_lora_rank, eps=self.rms_norm_eps)
@@ -278,8 +276,8 @@ class Attn(nn.Module):
         self.decompress_v_linear = nn.Linear(self.kv_lora_rank, self.value_dim, bias=False)
         self.k_rope_linear = nn.Linear(self.n_embd, self.rope_head_dim, bias=False)
 
-        # === Branch 2: Token Selection (DSA) ===
-   
+        # === Branch 2: Token Selection (CSA) ===
+        self.compress_weight_CSA = nn.Parameter(torch.randn(4))
         self.importance_scorer = nn.Linear(self.n_embd, 1, bias=False)
         self.selection_k = nn.Linear(self.n_embd, self.n_head * (self.rope_head_dim + self.nope_head_dim), bias=False)
         self.selection_v = nn.Linear(self.n_embd, self.value_dim, bias=False)
@@ -466,7 +464,7 @@ class Attn(nn.Module):
 
         # Branch 1: Compression
         if self.use_branch1:
-            x=softmax_token_compress(x,128,self.compress_weight_MLA)
+            x=softmax_token_compress(x,128,self.compress_weight_HCA)
             #print(x.size())
             k_recombined_1, value_1 = self._branch1_compression(x)
             
@@ -483,7 +481,7 @@ class Attn(nn.Module):
 
         # Branch 2: Selection
         if self.use_branch2:
-            x=softmax_token_compress(x,4,self.compress_weight_DSA)
+            x=softmax_token_compress(x,4,self.compress_weight_CSA)
             #print(x.size())
             k_selected, v_selected = self._branch2_selection(x)
             output_2 = F.scaled_dot_product_attention(
