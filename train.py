@@ -35,10 +35,11 @@ def parse_arguments():
     parser.add_argument('--ctx_len', type=int, default=config.ctx_len)
     parser.add_argument('--lr', type=float, default=config.lr)
     parser.add_argument('--max_iters', type=int, default=config.max_iters)
-    parser.add_argument('--eval_iters', type=int, default=config.eval_interval)
+    parser.add_argument('--eval_iters', type=int, default=config.eval_iters)
+    parser.add_argument('--eval_interval', type=int, default=config.eval_interval)
     parser.add_argument('--warmup_iters', type=int, default=config.warmup_iters)
     # Tokenizer settings
-    parser.add_argument('--tokenizer_name', type=str, default="gpt-2")
+    parser.add_argument('--tokenizer_name', type=str, default="gpt2")
     
     # Data and model paths
     parser.add_argument('--data_dir', type=str, default=config.data_dir)
@@ -439,7 +440,7 @@ def create_scheduler(optimizer, warmup_iters, max_iters, min_lr, last_epoch=-1):
     return SequentialLR(
         optimizer,
         schedulers=[
-            LinearLR(optimizer, start_factor=1e-3, total_iters=warmup_iters),
+            LinearLR(optimizer, start_factor=1e-1, total_iters=warmup_iters),
             CosineAnnealingLR(optimizer, T_max=max_iters - warmup_iters, eta_min=min_lr)
         ],
         milestones=[warmup_iters],
@@ -480,7 +481,7 @@ def train(args):
     device = config.device
     
     max_iters = args.max_iters
-    eval_interval = args.eval_iters
+    eval_interval = args.eval_interval
     warmup_iters = args.warmup_iters
     
     learning_rate = args.lr
@@ -684,7 +685,7 @@ def train(args):
             load_checkpoint(model, optimizers, scheduler, checkpoint_path, device)
                 
                 
-                start_iter=start_iter+1000
+                #start_iter=start_iter+1000
                 if loaded_wandb_id and not args.wandb_run_id:
                   current_wandb_id = loaded_wandb_id
                   print(f"Restored WandB run ID: {current_wandb_id}")
