@@ -1,4 +1,4 @@
-# Tiny-R2 A better combination: DSA/SWA/MLA, mHC, and DSMoE 
+# Tiny-R2 A better combination: CSA/SWA/HCA, mHC, and DSMoE 
 
 # Tiny-R2 模型架构与训练流程文档
 
@@ -11,7 +11,7 @@
 2. [模型架构总览](#模型架构总览)
 3. [核心组件详解](#核心组件详解)
    - 3.1 [注意力机制](#31-注意力机制)
-   - 3.2 [MLA-NSA 混合注意力](#32-mla-nsa-混合注意力)
+   - 3.2 [HCA-NSA 混合注意力](#32-HCA-nsa-混合注意力)
    - 3.3 [前馈网络与 MoE](#33-前馈网络与-moe)
    - 3.4 [Hyper-Connections](#34-hyper-connections)
 4. [训练流程](#训练流程)
@@ -24,7 +24,7 @@
 
 Tiny-R2 是一个紧凑型但功能强大的语言模型，结合了多种先进的深度学习技术：
 
-- **稀疏注意力机制** (MLA-NSA Hybrid Attention)
+- **稀疏注意力机制** (HCA-CSA Hybrid Attention)
 - **专家混合模型** (DeepSeek MoE)
 - **超连接技术** (Hyper-Connections)
 - **双优化器策略** (Muon + AdamW)
@@ -47,7 +47,7 @@ Token Embedding + Positional Embedding
                       ▼               │ Residual      |
               ┌───────────────┐       │ Connection    |
               │  Attention    │       │               |
-              │ (NSA/SWA/DSA) |       |               |
+              │ (HCA/SWA/CSA) |       |               |
               |     三选一     │       │               |
               └───────────────┘       │               |
                       │               │               |
@@ -93,7 +93,7 @@ pip install git+https://github.com/KellerJordan/Muon
 ### 2.2 启动训练
 
 ```
-python train.py --n_layer 12 --n_embd 384 --hc 'True' --mhc 'True' --n_experts 32  --max_iters 10000 --attention_types 'Spares' --batch_size 16 --ctx_len 1536 --hf_dataset 'Skylion007/openwebtext' --resume True --save_best_only True
+python train.py --n_layer 6 --n_embd 768 --hc 'True' --mhc 'True' --n_experts 32  --max_iters 10000 --attention_types 'Sparse' --batch_size 8 --ctx_len 2048 --hf_dataset 'karpathy/climbmix-400b-shuffle' --resume True --save_best_only True
 ```
 ### 2.3 验证模型训练效果，PPL
 ```
@@ -131,23 +131,23 @@ class CausalSelfAttention(nn.Module):
 - 支持 Value Residual Connections
 - 标准的因果掩码
 
-#### 3.1.2 MLA-NSA Hybrid Attention
+#### 3.1.2 HCA-NSA Hybrid Attention
 
-结合 Multi-head Latent Attention (MLA) 和 Native Sparse Attention (NSA) 的混合注意力机制。
+结合 Multi-head Latent Attention (HCA) 和 Native Sparse Attention (NSA) 的混合注意力机制。
 
 **三种运行模式：**
 
 | 模式 | 分支配置 | 说明 |
 |------|----------|------|
-| `NSA` | [1, 1, 1] | 启用所有三个分支 |
-| `SWA` | [1, 0, 1] | 压缩分支 + 滑动窗口分支 |
-| `DSA` | [1, 1, 0] | 压缩分支 + 选择分支 |
+| `HCA` | [1, 0, 0] | 启用所有三个分支 |
+| `SWA` | [0, 0, 1] | 压缩分支 + 滑动窗口分支 |
+| `CSA` | [0, 1, 0] | 压缩分支 + 选择分支 |
 
 ---
 
-### 3.2 MLA-NSA 混合注意力
+### 3.2 HCA-NSA 混合注意力
 
-MLA-NSA 是 Tiny-R2 的核心创新之一，通过三个并行分支实现高效的稀疏注意力计算。
+HCA-NSA 是 Tiny-R2 的核心创新之一，通过三个并行分支实现高效的稀疏注意力计算。
 
 #### 架构流程
 
@@ -155,14 +155,14 @@ MLA-NSA 是 Tiny-R2 的核心创新之一，通过三个并行分支实现高效
                        Input x
                           ↓
 ┌──────────────────────────────────────────────────────────────┐
-│ Query Preparation (MLA style)                                │
+│ Query Preparation (HCA style)                                │
 │   compress_q → q_norm → decompress_q → RoPE → Query         │
 └──────────────────────────────────────────────────────────────┘
                           ↓
 ┌──────────────────┬──────────────────┬──────────────────────┐
 │   Branch 1       │   Branch 2       │   Branch 3           │
 │   Compression    │   Selection      │   Sliding Window     │
-│   (MLA)          │   (DSA)          │   (SWA)              │
+│   (HCA)          │   (CSA)          │   (SWA)              │
 ├──────────────────┼──────────────────┼──────────────────────┤
 │ compress_kv      │ importance_score │ window_k/v           │
 │ kv_norm          │ topk selection   │ sliding_window       │
@@ -186,7 +186,7 @@ proj (Linear) → res_dropout → Output
 #### 关键参数
 
 ```python
-# MLA 参数
+# HCA 参数
 self.v_head_dim = 32
 self.kv_lora_rank = 32
 self.q_lora_rank = 3 * self.kv_lora_rank
@@ -394,7 +394,7 @@ def configure_optimizers(self, weight_decay, learning_rate, device):
 
 ### 5.1 注意力机制对比
 
-| 特性 | CausalSelfAttention | MLA-NSA Hybrid |
+| 特性 | CausalSelfAttention | HCA-NSA Hybrid |
 |------|---------------------|----------------|
 | 计算复杂度 | O(n²) | O(n) ~ O(n log n) |
 | 内存使用 | 高 | 低 |
@@ -445,7 +445,7 @@ max_iters = 100000
 | 文件名 | 说明 |
 |--------|------|
 | `model_architecture.png` | 模型整体架构图 |
-| `mla_nsa_attention.png` | MLA-NSA 混合注意力详细结构图 |
+| `HCA_nsa_attention.png` | HCA-NSA 混合注意力详细结构图 |
 | `dsmoe_architecture.png` | DSMoE 专家混合结构图 |
 | `training_pipeline.png` | 完整训练流程图 |
 | `tinyr2_overview.png` | Tiny-R2 综合概览图 |
