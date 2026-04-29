@@ -1,4 +1,4 @@
-# Tiny-R2 A better combination: CSA/SWA/HCA, mHC, and DSMoE 
+# Tiny-R2: A Hybrid Architecture Combining SWA, CSA, HCA, mHC and DSMoE Under the DeepSeek V4 Design Paradigm
 
 # Tiny-R2 模型架构与训练流程文档
 
