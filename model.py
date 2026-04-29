@@ -205,13 +205,13 @@ def apply_rope(x: torch.Tensor, y: torch.Tensor, freqs_cis) -> tuple[torch.Tenso
 
 
 # =============================================================================
-# MLA-NSA Hybrid Attention
+# HCA-NSA Hybrid Attention
 # =============================================================================
 
 class Attn(nn.Module):
     """
     Native Sparse Attention with Multi-headed Latent Attention integration.
-    Combines MLA's compression techniques with NSA's natural sparsity.
+    Combines HCA's compression techniques with NSA's natural sparsity.
     Supports configurable branches via config.
     """
     
@@ -287,7 +287,7 @@ class Attn(nn.Module):
         self.window_k = nn.Linear(self.n_embd, self.n_head * (self.rope_head_dim + self.nope_head_dim), bias=False)
         self.window_v = nn.Linear(self.n_embd, self.value_dim, bias=False)
 
-        # Token Compression (MLA) - needed for branch1 if used
+        # Token Compression (HCA) - needed for branch1 if used
         if self.use_branch1:
             self.block_compressor = nn.Sequential(
                 nn.Linear(self.block_size * self.n_embd, 4 * self.n_embd, bias=False),
@@ -359,7 +359,7 @@ class Attn(nn.Module):
             return x[:, window_start:window_end]
 
     def _prepare_queries(self, x):
-        """Prepare queries using MLA approach."""
+        """Prepare queries using HCA approach."""
         B, T, _ = x.size()
         
         compressed_q = self.compress_q_linear(x)
