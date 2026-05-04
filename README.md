@@ -1,5 +1,22 @@
 # Tiny-R2: A Hybrid Architecture Combining SWA, CSA, HCA, mHC and DSMoE Under the DeepSeek V4 Design Paradigm
 
+
+
+
+<img width="1536" height="1024" alt="模型结构" src="https://github.com/user-attachments/assets/2a7c317f-5b61-4abf-8fdf-56dc4e613002" />
+<img width="833" height="441" alt="benchimark" src="https://github.com/user-attachments/assets/bae360e3-b48a-4f01-94ce-07e3c0fc7d3b" />
+<img width="2131" height="891" alt="loss" src="https://github.com/user-attachments/assets/7821bf23-1e81-406b-a867-2396bbe0da63" />
+
+
+
+
+
+
+
+
+
+
+
 # Tiny-R2 模型架构与训练流程文档
 
 
