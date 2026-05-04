@@ -39,7 +39,7 @@
 
 ## 项目概述
 
-Tiny-R2 是一个紧凑型但功能强大的语言模型，结合了多种先进的深度学习技术：
+Tiny-R2 是一个以快速复现DeepSeekV4/R2为目标的项目，目前已经实现如下的架构：
 
 - **稀疏注意力机制** (HCA-CSA Hybrid Attention)
 - **专家混合模型** (DeepSeek MoE)
