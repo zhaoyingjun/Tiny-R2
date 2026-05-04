@@ -69,16 +69,16 @@ pip install git+https://github.com/KellerJordan/Muon
 ```
 python train.py --n_layer 6 --n_embd 768 --hc 'True' --mhc 'True' --n_experts 32  --max_iters 10000 --attention_types 'Sparse' --batch_size 8 --ctx_len 2048 --hf_dataset 'karpathy/climbmix-400b-shuffle' --resume True --save_best_only True
 ```
-### 2.3 验证模型训练效果，PPL
+### 2.3 验证模型训练效果PPL
 ```
-python evaluate.py --checkpoint checkpoints/best_model_step_4720.pt
+python evaluate.py --checkpoint checkpoints/best_model_step_xxx.pt 
 ```
 
 ## 核心组件详解
 
 ### 3.1 注意力机制
 
-Tiny-R2 支持两种注意力类型，通过配置 `attention_types` 灵活切换：
+Tiny-R2 支持FullAttention与Sparse Attention注意力类型，通过配置 `attention_types` 灵活切换：
 
 #### 3.1.1 CausalSelfAttention (Full Attention)
 
@@ -105,17 +105,17 @@ class CausalSelfAttention(nn.Module):
 - 支持 Value Residual Connections
 - 标准的因果掩码
 
-#### 3.1.2 HCA-NSA Hybrid Attention
+#### 3.1.2 HCA-CSA Hybrid Attention
 
-结合 Multi-head Latent Attention (HCA) 和 Native Sparse Attention (NSA) 的混合注意力机制。
+结合 HCA)和CSA 的混合注意力机制。
 
 **三种运行模式：**
 
 | 模式 | 分支配置 | 说明 |
 |------|----------|------|
-| `HCA` | [1, 0, 0] | 启用所有三个分支 |
-| `SWA` | [0, 0, 1] | 压缩分支 + 滑动窗口分支 |
-| `CSA` | [0, 1, 0] | 压缩分支 + 选择分支 |
+| `HCA` | [1, 0, 0] | 超级压缩分支 |
+| `SWA` | [0, 0, 1] | 滑动窗口分支 |
+| `CSA` | [0, 1, 0] | 压缩 + 选择分支 |
 
 ---
 
@@ -419,19 +419,20 @@ max_iters = 100000
 | 文件名 | 说明 |
 |--------|------|
 | `model_architecture.png` | 模型整体架构图 |
-| `HCA_nsa_attention.png` | HCA-NSA 混合注意力详细结构图 |
-| `dsmoe_architecture.png` | DSMoE 专家混合结构图 |
-| `training_pipeline.png` | 完整训练流程图 |
-| `tinyr2_overview.png` | Tiny-R2 综合概览图 |
+| `loss.png` | 训练 20亿Tokens的loss收敛图 |
+| `benchmark.png` | wikitext-103 benchmark图 |
+
 
 ---
 
 ## 参考资料
 
-- [Tiny-R2 GitHub Repository](https://github.com/zhaoyingjun/Tiny-R2)
+
 - [DeepSeek-V2 Technical Report](https://arxiv.org/abs/2405.04434)
 - [Native Sparse Attention (NSA)](https://arxiv.org/abs/2502.04543)
 - [Hyper-Connections Paper](https://arxiv.org/abs/2409.19607)
+- [DeepSeek-V3 Technical Report]()
+- [DeepSeek-V4 Technical Report]()
 
 ---
 
