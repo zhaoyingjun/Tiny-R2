@@ -50,52 +50,9 @@ Tiny-R2 是一个紧凑型但功能强大的语言模型，结合了多种先进
 
 ## 模型架构总览
 
-```
-               Input Tokens
-                      ↓
-Token Embedding + Positional Embedding
-                      ↓
-       Hyper-Connection Expand Stream
-                      │
-                      ▼
--------------------------------------------------------
-                  RMSNorm ────────────┐               |
-                      │               │               |
-                      ▼               │ Residual      |
-              ┌───────────────┐       │ Connection    |
-              │  Attention    │       │               |
-              │ (HCA/SWA/CSA) |       |               |
-              |     三选一     │       │               |
-              └───────────────┘       │               |
-                      │               │               |
-                      ▼               │               |
-           Hyper-connection (hc_attn) │               |
-                      │               │               |
-                      ▼               │       N*Transformer Block
-                  RMSNorm ────────────┤               |
-                      │               │               |
-                      ▼               │               |
-              ┌───────────────┐       │               |
-              │  Dense / MoE  │       │               |
-              │  MLP/DSMoE    |       |               |
-              |    二选一      │       │               |
-              └───────────────┘       │               |
-                      │               │               |
-                      ▼               │               |
-           Hyper-connection (hc_mlp)  │               |
-                      │               │               |
-                      └───────────────┘               |
-                      │                               |
-                      ▼                               |
-            Output + router_weights                   |
-                      ↓                               |
-         Hyper-Connection Reduce Stream               |
------------------------------------------------------
-                      ↓
-               RMSNorm + LM Head
-                       ↓
-                 Output Logits
-```
+
+<img width="1536" height="1024" alt="模型结构" src="https://github.com/user-attachments/assets/2a7c317f-5b61-4abf-8fdf-56dc4e613002" />
+
 
 ---
 
