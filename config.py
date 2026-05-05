@@ -5,7 +5,7 @@ import torch
 # -------------------------
 # Training parameters
 # -------------------------
-batch_size = 8
+batch_size = 1
 ctx_len = 2048          # context length
 eval_interval = 20
 grad_accum = 16
@@ -31,7 +31,7 @@ info_levl=1 #1:model parameters and Optimizer and  MoE / Router Info and mhc / m
 # -------------------------
 n_embd = 768
 n_head = 16
-n_layer = 12
+n_layer = 6
 n_experts = 32
 num_exp=2
 shared_experts=1
