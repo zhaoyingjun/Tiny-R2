@@ -28,7 +28,7 @@
 2. [模型架构总览](#模型架构总览)
 3. [核心组件详解](#核心组件详解)
    - 3.1 [注意力机制](#31-注意力机制)
-   - 3.2 [HCA-CSA 混合注意力](#32-HCA-nsa-混合注意力)
+   - 3.2 [HCA-CSA 混合注意力](#32-HCA-CSA-混合注意力)
    - 3.3 [前馈网络与 MoE](#33-前馈网络与-moe)
    - 3.4 [Hyper-Connections](#34-hyper-connections)
 4. [训练流程](#训练流程)
@@ -123,9 +123,9 @@ class CausalSelfAttention(nn.Module):
 
 ---
 
-### 3.2 HCA-NSA 混合注意力
+### 3.2 HCA-CSA 混合注意力
 
-HCA-NSA 是 Tiny-R2 的核心创新之一，通过三个并行分支实现高效的稀疏注意力计算。
+HCA-CSA 是 Tiny-R2 的核心创新之一，通过三个并行分支实现高效的稀疏注意力计算。
 
 #### 架构流程
 
@@ -171,7 +171,7 @@ self.q_lora_rank = 3 * self.kv_lora_rank
 self.rope_head_dim = 64
 self.nope_head_dim = 32
 
-# NSA 参数
+# CSA 参数
 self.block_size = config.block_size      # Token压缩块大小
 self.window_size = config.window_size    # 滑动窗口大小
 self.num_tokens_to_keep = config.num_tokens_to_keep  # 选择保留的token数
@@ -372,7 +372,7 @@ def configure_optimizers(self, weight_decay, learning_rate, device):
 
 ### 5.1 注意力机制对比
 
-| 特性 | CausalSelfAttention | HCA-NSA Hybrid |
+| 特性 | CausalSelfAttention | HCA-CSA Hybrid |
 |------|---------------------|----------------|
 | 计算复杂度 | O(n²) | O(n) ~ O(n log n) |
 | 内存使用 | 高 | 低 |
@@ -400,7 +400,7 @@ num_exp = 2         # 每token激活的专家数
 
 # 注意力配置
 attention_types = ["FULL", "Spares", ...]  # 每层注意力类型
-attention_mode = ["FULL", "SWA", "NSA"]    # 稀疏注意力模式
+attention_mode = ["FULL", "SWA", "CSA"]    # 稀疏注意力模式
 
 # Hyper-Connections
 hc = True           # 启用超连接
@@ -433,7 +433,7 @@ max_iters = 100000
 
 
 - [DeepSeek-V2 Technical Report](https://arxiv.org/abs/2405.04434)
-- [Native Sparse Attention (NSA)](https://arxiv.org/abs/2502.04543)
+- [Native Sparse Attention (CSA)](https://arxiv.org/abs/2502.04543)
 - [Hyper-Connections Paper](https://arxiv.org/abs/2409.19607)
 - [DeepSeek-V3 Technical Report]()
 - [DeepSeek-V4 Technical Report]()
