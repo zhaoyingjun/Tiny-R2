@@ -39,7 +39,7 @@ def parse_arguments():
     parser.add_argument('--eval_interval', type=int, default=config.eval_interval)
     parser.add_argument('--warmup_iters', type=int, default=config.warmup_iters)
     # Tokenizer settings
-    parser.add_argument('--tokenizer_name', type=str, default="gpt2")
+    parser.add_argument('--tokenizer_name', type=str, default="Qwen/Qwen3.5-9B")
     
     # Data and model paths
     parser.add_argument('--data_dir', type=str, default=config.data_dir)
@@ -599,7 +599,7 @@ def train(args):
     
     # Training state
     if start_iter>0:
-      start_iter=start_iter+1000
+      start_iter=start_iter
     last_saved_step = start_iter
     
     print("🚀 Starting training" if start_iter == 0 else f"🚀 Resuming training from iteration {start_iter}")
