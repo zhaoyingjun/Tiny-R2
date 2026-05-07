@@ -72,8 +72,8 @@ def main():
         from tokenizers import Tokenizer
         tokenizer = Tokenizer.from_file("tokenizer.json")  # 修改为你自己的 tokenizer 文件
     except Exception as e:
-        print("Tokenizer not found, using GPT-2 tokenizer")
-        tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        print("Tokenizer not found, using Qwen/Qwen3.5-9B tokenizer")
+        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3.5-9B")
         tokenizer.pad_token = tokenizer.eos_token
         config.vocab_size = tokenizer.vocab_size
 
