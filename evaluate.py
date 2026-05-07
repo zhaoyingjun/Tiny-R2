@@ -110,7 +110,7 @@ def get_tokenizer():
     
     # 回退到 GPT2
     print("Using GPT-2 tokenizer")
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3.5-9B")
     tokenizer.pad_token = tokenizer.eos_token
     return tokenizer
 
