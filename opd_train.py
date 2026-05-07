@@ -1,25 +1,7 @@
 #!/usr/bin/env python3
 """
-Tiny-R2 OPD 训练 - 多数据集支持版 (工业级完整版+致命Bug全修复)
-✅ 核心修复：logits时序严格对齐（左移1位，丢弃最后无效token）
-✅ 核心修复：response_mask精准计算（仅答案部分有效）
-✅ 修复：标准无魔改 Reverse KL Loss（纯 Tensor，兼容混合精度）
-✅ 修复：强制锁定 AdamW 学习率为 args.lr（打印验证）
-✅ 修复：dtype 不匹配警告
-✅ 新增：支持 AIME25、AMC23、DAPO、MATH-500、MMLU-Pro、MedQA、MedXpertQA-Text、Minerva
-✅ 新增：智能词汇表维度对齐（支持检查点词汇表 < 当前模型）
-✅ 新增：优雅关闭分布式环境
-✅ 修复：优化器状态维度不匹配问题（重新初始化优化器）
-✅ 修复：教师/学生词汇表不匹配 RuntimeError
-✅ 梯度累积逻辑（从重复同batch改为累积多batch）
-✅ 验证损失口径统一（训练/验证均按有效token平均）
-✅ 迭代步数精准控制
-✅ 验证效率提升（独立val_batch_size + inference_mode）
-✅首次验证基线性能
-✅ Loss计算对齐TRL OPSDTrainer（广义JSD散度）
-✅ 支持Top-k Token限制、Token级Clip
-✅ Mask维度不匹配问题（unsqueeze扩展维度适配词汇表维度）
-✅ RMSNorm dtype不匹配警告（自动对齐权重与输入dtype）
+Tiny-R2 OPD 训练 - 多数据集支持版
+
 """
 
 import os
@@ -181,7 +163,7 @@ def find_latest_checkpoint(checkpoint_dir):
 
 def load_checkpoint(model, optimizers, scheduler, checkpoint_path, device):
     """
-    🔥 智能加载检查点（终极版）
+ 
     - 自动处理词汇表大小不匹配（支持检查点 < 当前模型）
     - 对于不匹配的层，智能复制前 N 个 token
     - 优化器状态重新初始化（避免维度不匹配）
@@ -201,7 +183,7 @@ def load_checkpoint(model, optimizers, scheduler, checkpoint_path, device):
     elif not is_compiled_model and is_compiled_ckpt:
         model_state = {k.replace("_orig_mod.", ""): v for k, v in model_state.items()}
     
-    # 🔥 核心修复：智能词汇表对齐
+    # 智能词汇表对齐
     current_sd = model.state_dict()
     filtered_state = {}
     
@@ -215,7 +197,7 @@ def load_checkpoint(model, optimizers, scheduler, checkpoint_path, device):
         if ckpt_tensor.shape == current_tensor.shape:
             filtered_state[key] = ckpt_tensor
         
-        # 🔥 词汇表维度不匹配（检查点 < 当前模型）-> 智能复制
+        # 词汇表维度不匹配（检查点 < 当前模型）-> 智能复制
         elif key in ["token_embedding_table.weight", "lm_head.weight"]:
             ckpt_vocab, hidden_dim = ckpt_tensor.shape
             curr_vocab, _ = current_tensor.shape
@@ -406,7 +388,7 @@ def collate_fn(batch: List[Dict[str, torch.Tensor]], tokenizer):
     }
 
 # ======================
-# 【致命Bug修复版】对齐 TRL OPSDTrainer 的广义 JSD Loss
+# 对齐 TRL OPSDTrainer 的广义 JSD Loss
 # 修复：Mask 维度扩展，支持广播乘法
 # ======================
 def generalized_jsd_loss(
@@ -506,11 +488,11 @@ def generalized_jsd_loss(
 
     return loss
 
-# ====================== 验证函数（致命Bug修复版） ======================
+# ====================== 验证函数 ======================
 @torch.inference_mode()  # 比no_grad更快，推理专用
 def validate(model, teacher_model, dataloader, args, ctx):
     """
-    🔥 核心修复：验证损失口径与训练完全一致
+    验证损失口径与训练完全一致
     - 不再按batch平均，而是按【总有效token数】平均
     - 使用torch.inference_mode()加速
     - 对齐TRL的广义JSD Loss
@@ -656,13 +638,13 @@ def main():
     args = parse_args()
     update_config_from_args(args)
     
-    # 【工业级新增】参数校验
+    # 参数校验
     if args.batch_size <= 0:
         raise ValueError(f"BatchSize必须>0，当前值: {args.batch_size}")
     if args.grad_accum_steps <= 0:
         raise ValueError(f"梯度累积步数必须>0，当前值: {args.grad_accum_steps}")
     
-    # 【工业级新增】自动设置 opd_beta
+    # 自动设置 opd_beta
     if args.opd_beta is None:
         if args.opd_loss_type == "reverse_kl":
             args.opd_beta = 0.0
@@ -672,7 +654,7 @@ def main():
             args.opd_beta = 0.5
         print(f"ℹ️  根据损失类型自动设置 opd_beta={args.opd_beta}")
     
-    # 【工业级新增】验证BatchSize默认配置
+    # 验证BatchSize默认配置
     if args.val_batch_size is None:
         args.val_batch_size = args.batch_size * 2
         print(f"ℹ️  验证BatchSize未指定，自动设置为: {args.val_batch_size}")
@@ -762,7 +744,7 @@ def main():
         device = args.device
         model = Transformer().to(device)
         
-        # 【警告修复】自动对齐RMSNorm权重与模型dtype，解决dtype不匹配警告
+        # 自动对齐RMSNorm权重与模型dtype，解决dtype不匹配警告
         model_dtype = next(model.parameters()).dtype
         for name, module in model.named_modules():
             if hasattr(module, 'weight') and 'norm' in name.lower():
@@ -813,13 +795,13 @@ def main():
             p.requires_grad = False
 
         # 6. 训练配置
-        # 【致命Bug修复】仅在CUDA且真正需要时启用GradScaler
+        # 仅在CUDA且真正需要时启用GradScaler
         enable_amp = "cuda" in device and torch.cuda.is_available()
         ctx = torch.amp.autocast(device_type="cuda", dtype=torch.float16) if enable_amp else nullcontext()
         scaler = amp.GradScaler(enabled=enable_amp) if enable_amp else None
         global_step = start_iter
 
-        # 【工业级新增】首次验证基线性能
+        # 首次验证基线性能
         if global_step == 0:
             print("\n" + "="*60)
             print("🔍 首次验证：基线性能评估")
@@ -828,12 +810,12 @@ def main():
             print(f"✅ 初始验证损失: {initial_val_loss:.4f}")
             best_val_loss = initial_val_loss
 
-        # 7. 开始训练（工业级修复：梯度累积 + 步数控制 + 分布式兼容）
+        # 7. 开始训练（梯度累积 + 步数控制 + 分布式兼容）
         print("\n" + "="*60)
         print(f"🚀 开始 OPD 蒸馏训练 | 数据集: {args.dataset} | 起始迭代: {global_step}")
         print("="*60)
         
-        # 【核心修复】正确的梯度累积训练循环
+        # 正确的梯度累积训练循环
         train_iter = iter(train_loader)
         
         while global_step < args.max_iters:
@@ -870,7 +852,7 @@ def main():
                 with ctx:
                     s_logits = model(input_ids)[0]
                 
-                # 【核心修正】精准切片生成部分 Logits
+                #精准切片生成部分 Logits
                 if prompt_len > 0:
                     s_logits_chunk = s_logits[:, prompt_len-1:-1, :]
                     t_logits_chunk = t_logits[:, prompt_len-1:-1, :]
@@ -881,7 +863,7 @@ def main():
                     t_logits_chunk = t_logits[:, :-1, :]
                     labels_chunk = labels[:, 1:]
                 
-                # 【核心修正】使用对齐 TRL 的广义 JSD Loss
+                # 使用对齐 TRL 的广义 JSD Loss
                 loss = generalized_jsd_loss(
                     student_logits=s_logits_chunk,
                     teacher_logits=t_logits_chunk,
@@ -895,7 +877,7 @@ def main():
                 
                 loss = loss / args.grad_accum_steps
                 
-                # 【致命Bug修复】GradScaler与分布式兼容处理
+                # GradScaler与分布式兼容处理
                 if scaler is not None:
                     scaler.scale(loss).backward()
                 else:
@@ -906,7 +888,7 @@ def main():
             # 参数更新
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
             
-            # 【致命Bug修复】优化器step与GradScaler兼容处理
+            # 优化器step与GradScaler兼容处理
             if scaler is not None:
                 for opt in optimizers:
                     scaler.step(opt)
@@ -951,7 +933,7 @@ def main():
         print("\n🎉 训练完成！")
 
     finally:
-        # 🔥 核心修复：仅在真正初始化过分布式环境时才关闭
+        # 仅在真正初始化过分布式环境时才关闭
         if dist.is_initialized():
             print("\n🔌 关闭分布式环境...")
             dist.destroy_process_group()
