@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Tiny-R2 OPD 训练 - GPQA Diamond 专用
+Tiny-R2 OPD 训练 - 多数据集支持版
+✅ 新增：支持 AIME25、AMC23、DAPO、MATH-500、MMLU-Pro、MedQA、MedXpertQA-Text、Minerva
 ✅ 新增：智能词汇表维度对齐（支持检查点词汇表 < 当前模型）
 ✅ 新增：优雅关闭分布式环境
 ✅ 修复：优化器状态维度不匹配问题（重新初始化优化器）
@@ -27,7 +28,7 @@ import torch.distributed as dist
 from torch.utils.data import Dataset, DataLoader
 from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
 
-from datasets import load_dataset
+from datasets import load_dataset, DatasetDict
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
@@ -53,6 +54,83 @@ def str2bool(v):
         return False
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
+
+# ====================== 数据集配置注册表 ======================
+DATASET_CONFIGS = {
+    "gpqa_diamond": {
+        "hf_path": "Idavidrein/gpqa",
+        "hf_subset": "gpqa_diamond",
+        "split": "train",
+        "instruction_key": "Question",
+        "response_key": "Correct Answer",
+        "system_prompt": None
+    },
+    "aime25": {
+        "hf_path": "math-ai/aime25",
+        "hf_subset": None,
+        "split": "train",
+        "instruction_key": "problem",
+        "response_key": "solution",
+        "system_prompt": "请解决以下数学竞赛题，并给出详细解答过程。"
+    },
+    "amc23": {
+        "hf_path": "math-ai/amc23",
+        "hf_subset": None,
+        "split": "train",
+        "instruction_key": "problem",
+        "response_key": "solution",
+        "system_prompt": "请解决以下数学竞赛题，并给出详细解答过程。"
+    },
+    "dapo": {
+        "hf_path": "BytedTsinghua-SIA/DAPO-Math-17k",
+        "hf_subset": None,
+        "split": "train",
+        "instruction_key": "instruction",
+        "response_key": "response",
+        "system_prompt": None
+    },
+    "math500": {
+        "hf_path": "math-ai/math500",
+        "hf_subset": None,
+        "split": "test",
+        "instruction_key": "problem",
+        "response_key": "solution",
+        "system_prompt": "请解决以下数学题，并给出详细解答过程。"
+    },
+    "mmlu_pro": {
+        "hf_path": "TIGER-Lab/MMLU-Pro",
+        "hf_subset": None,
+        "split": "test",
+        "instruction_key": "question",
+        "response_key": "answer",
+        "system_prompt": "请回答以下多项选择题，只需给出正确选项。",
+        "preprocess": lambda x: f"{x['question']}\n选项：\n" + "\n".join([f"{chr(65+i)}. {opt}" for i, opt in enumerate(x['options'])])
+    },
+    "medqa": {
+        "hf_path": "bigbio/med_qa",
+        "hf_subset": "medqa_usmle_hf",
+        "split": "train",
+        "instruction_key": "question",
+        "response_key": "answer",
+        "system_prompt": "请回答以下医学问题。"
+    },
+    "medxpertqa_text": {
+        "hf_path": "OctoMed/MedXpertQA-Text",
+        "hf_subset": None,
+        "split": "train",
+        "instruction_key": "question",
+        "response_key": "answer",
+        "system_prompt": "请回答以下医学专业问题。"
+    },
+    "minerva": {
+        "hf_path": "math-ai/minervamath",
+        "hf_subset": None,
+        "split": "train",
+        "instruction_key": "question",
+        "response_key": "answer",
+        "system_prompt": "请解决以下问题并给出详细步骤。"
+    }
+}
 
 # ====================== 检查点管理函数 ======================
 def find_latest_checkpoint(checkpoint_dir):
@@ -173,7 +251,7 @@ def load_checkpoint(model, optimizers, scheduler, checkpoint_path, device):
 
 # ====================== 参数解析 ======================
 def parse_args():
-    parser = argparse.ArgumentParser(description="Tiny-R2 OPD Train with GPQA-Diamond")
+    parser = argparse.ArgumentParser(description="Tiny-R2 OPD Train - Multi-Dataset Support")
 
     # 训练超参
     parser.add_argument('--batch_size', type=int, default=getattr(config, 'batch_size', 2))
@@ -192,10 +270,14 @@ def parse_args():
     parser.add_argument('--n_layer', type=int, default=getattr(config, 'n_layer', 6))
     parser.add_argument('--n_experts', type=int, default=getattr(config, 'n_experts', 32))
     
-    # 固定配置：GPQA Diamond 官方数据集
-    parser.add_argument("--hf_dataset", type=str, default="Idavidrein/gpqa")
-    parser.add_argument("--hf_subset", type=str, default="gpqa_diamond")
-    parser.add_argument("--hf_streaming", type=str2bool, default=False)
+    # 数据集配置（核心新增）
+    parser.add_argument("--dataset", type=str, default="gpqa_diamond", 
+                        choices=list(DATASET_CONFIGS.keys()),
+                        help=f"选择训练数据集: {', '.join(DATASET_CONFIGS.keys())}")
+    parser.add_argument("--val_size", type=float, default=0.2,
+                        help="验证集比例 (0-1)")
+    parser.add_argument("--hf_cache_dir", type=str, default=None,
+                        help="HuggingFace 数据集缓存目录")
 
     # 模型路径
     parser.add_argument("--student_ckpt", type=str, default=None, help="指定检查点路径 (可选，不指定则自动查找)")
@@ -209,6 +291,7 @@ def parse_args():
 
     # 保存
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
+    parser.add_argument("--opd_checkpoint_dir", type=str, default="opd_checkpoints")
     parser.add_argument("--val_freq", type=int, default=50)
 
     # 硬件
@@ -221,12 +304,13 @@ def update_config_from_args(args):
         if hasattr(args, attr):
             setattr(config, attr, getattr(args, attr))
 
-# ====================== GPQA 数据集类 ======================
-class GPQADataset(Dataset):
-    def __init__(self, hf_dataset, tokenizer, ctx_len: int):
+# ====================== 通用数据集类 ======================
+class UnifiedDataset(Dataset):
+    def __init__(self, hf_dataset, tokenizer, ctx_len: int, dataset_config: Dict[str, Any]):
         self.tokenizer = tokenizer
         self.ctx_len = ctx_len
         self.dataset = hf_dataset
+        self.config = dataset_config
         print(f"📊 数据集加载完成 | 样本数: {len(self.dataset)}")
 
     def __len__(self):
@@ -234,14 +318,33 @@ class GPQADataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         item = self.dataset[idx]
-        instruction = item["Question"]
-        response = item["Correct Answer"]
-
-        # Qwen 对话模板
-        messages = [
+        
+        # 获取指令和回复
+        instruction_key = self.config["instruction_key"]
+        response_key = self.config["response_key"]
+        
+        # 应用自定义预处理（如果有）
+        if "preprocess" in self.config:
+            instruction = self.config["preprocess"](item)
+        else:
+            instruction = item[instruction_key]
+        
+        response = item[response_key]
+        
+        # 构建消息列表
+        messages = []
+        
+        # 添加系统提示（如果有）
+        if self.config.get("system_prompt"):
+            messages.append({"role": "system", "content": self.config["system_prompt"]})
+        
+        # 添加用户和助手消息
+        messages.extend([
             {"role": "user", "content": instruction},
             {"role": "assistant", "content": response}
-        ]
+        ])
+        
+        # 应用聊天模板
         full_text = self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=False
         )
@@ -252,10 +355,10 @@ class GPQADataset(Dataset):
         )
         input_ids = tokenized["input_ids"].squeeze(0)
 
-        # 构建 mask
-        prompt_msg = [{"role": "user", "content": instruction}]
+        # 构建 mask（仅对回复部分计算损失）
+        prompt_messages = messages[:-1]  # 去掉最后的 assistant 回复
         prompt_text = self.tokenizer.apply_chat_template(
-            prompt_msg, tokenize=False, add_generation_prompt=True
+            prompt_messages, tokenize=False, add_generation_prompt=True
         )
         prompt_len = len(self.tokenizer(prompt_text, return_tensors="pt")["input_ids"][0])
 
@@ -357,13 +460,93 @@ def validate(model, teacher_model, dataloader, args, ctx):
     model.train()
     return total_loss / len(dataloader)
 
+
+# =============================================================================
+# Model Summary
+# =============================================================================
+
+def print_detailed_summary(model, optimizers, start_iter=0, max_iters=0, best_val_loss=float('inf')):
+    """Print detailed model and optimizer summary."""
+    print("\n" + "=" * 60)
+    print("Model & Optimizer Summary")
+    if start_iter > 0:
+        print(f"Resuming from iteration {start_iter}/{max_iters}")
+        print(f"Best validation loss so far: {best_val_loss:.4f}")
+    print("=" * 60 + "\n")
+    
+    # Total parameters
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Total trainable parameters: {total_params / 1e6:.3f} M\n")
+    
+    # Layer-wise parameters (if detailed info enabled)
+    if getattr(config, 'info_level', 0) == 2:
+        print("--- Layer-wise Parameters ---")
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                print(f"{name:50} | shape={tuple(param.shape)} | params={param.numel()}")
+        print()
+    
+    # Transformer architecture info
+    print("--- Transformer Architecture ---")
+    print(f"Number of layers: {config.n_layer}")
+    print(f"Attention heads: {config.n_head}")
+    print(f"Embedding size: {config.n_embd}")
+    
+    if hasattr(model, 'blocks'):
+        for i, block in enumerate(model.blocks):
+            atten_type = getattr(block, 'atten_types', 'unknown')
+            atten_mode = getattr(block, 'atten_mode', 'MLA')
+            ffn_type = getattr(block, 'ffn_type', 'unknown')
+            print(f"Layer {i}: atten={atten_type}, atten_mode={atten_mode}, ffn={ffn_type}")
+    print()
+    
+    # MoE configuration
+    print("--- MoE Configuration ---")
+    print(f"Number of experts: {config.n_experts}")
+    print(f"Active experts per token: {getattr(config, 'num_exp', 'N/A')}")
+    print(f"Shared experts: {getattr(config, 'shared_experts', 'N/A')}")
+    print(f"Expert bias enabled: {getattr(config, 'use_expert_bias', False)}")
+    print()
+    
+    # Hyper-connections info
+    print("--- Hyper-connections ---")
+    if hasattr(model, 'expand_stream'):
+        print(f"Expand stream: {type(model.expand_stream).__name__}")
+    if hasattr(model, 'reduce_stream'):
+        print(f"Reduce stream: {type(model.reduce_stream).__name__}")
+    print()
+    
+    # Optimizer info
+    print("--- Optimizers ---")
+    for i, opt in enumerate(optimizers):
+        opt_type = type(opt).__name__
+        for j, pg in enumerate(opt.param_groups):
+            lr = pg.get('lr', 'N/A')
+            wd = pg.get('weight_decay', 'N/A')
+            print(f"Optimizer {i} ({opt_type}) group {j}: lr={lr}, wd={wd}")
+        
+        if opt_type.lower() == 'muon':
+            num_experts = getattr(opt, 'num_experts', 'N/A')
+            print(f"  -> Muon handles {num_experts} experts")
+    
+    print("\n" + "=" * 60 + "\n")
+    return total_params
+
+
+
+
 # ====================== 主函数 ======================
 def main():
     args = parse_args()
     update_config_from_args(args)
     os.makedirs(args.checkpoint_dir, exist_ok=True)
+    os.makedirs(args.opd_checkpoint_dir, exist_ok=True)
     random.seed(42)
     torch.manual_seed(42)
+
+    # 获取数据集配置
+    dataset_config = DATASET_CONFIGS[args.dataset]
+    print(f"📚 选中数据集: {args.dataset}")
 
     # 初始化分布式训练环境
     if not dist.is_initialized():
@@ -388,21 +571,32 @@ def main():
         config.vocab_size = len(tokenizer)
         print(f"✅ 词汇量: {len(tokenizer)}")
 
-        # 2. 加载 GPQA Diamond
+        # 2. 加载数据集（通用版）
         print("\n" + "="*60)
-        print("📊 加载 GPQA 子集: gpqa_diamond")
+        print(f"📊 加载数据集: {args.dataset}")
         print("="*60)
         
-        ds = load_dataset(args.hf_dataset, args.hf_subset, split="train")
+        # 加载 HuggingFace 数据集
+        load_kwargs = {
+            "path": dataset_config["hf_path"],
+            "split": dataset_config["split"]
+        }
+        if dataset_config["hf_subset"]:
+            load_kwargs["name"] = dataset_config["hf_subset"]
+        if args.hf_cache_dir:
+            load_kwargs["cache_dir"] = args.hf_cache_dir
+            
+        ds = load_dataset(**load_kwargs)
         ds = ds.shuffle(seed=42)
         
-        # 自动切分 80%训练 / 20%验证
-        val_size = int(len(ds) * 0.2)
+        # 自动切分训练/验证集
+        val_size = int(len(ds) * args.val_size)
         val_ds_raw = ds.select(range(val_size))
         train_ds_raw = ds.select(range(val_size, len(ds)))
 
-        train_dataset = GPQADataset(train_ds_raw, tokenizer, args.ctx_len)
-        val_dataset = GPQADataset(val_ds_raw, tokenizer, args.ctx_len)
+        # 使用统一数据集类
+        train_dataset = UnifiedDataset(train_ds_raw, tokenizer, args.ctx_len, dataset_config)
+        val_dataset = UnifiedDataset(val_ds_raw, tokenizer, args.ctx_len, dataset_config)
 
         from functools import partial
         collate = partial(collate_fn, tokenizer=tokenizer)
@@ -411,7 +605,7 @@ def main():
 
         # 3. 初始化模型
         print("\n" + "="*60)
-        print("🤖 初始化 Tiny-R2 模型")
+        print("🤖 初始化学生模型")
         print("="*60)
         device = args.device
         model = Transformer().to(device)
@@ -426,24 +620,26 @@ def main():
         # 4. 自动加载检查点
         start_iter = 0
         best_val_loss = float("inf")
-        checkpoint_path = None
+        #checkpoint_path = None
         
         # 优先使用用户指定的检查点
         if args.student_ckpt and os.path.exists(args.student_ckpt):
             checkpoint_path = args.student_ckpt
-        else:
-            # 自动查找最新检查点
-            checkpoint_path, _ = find_latest_checkpoint(args.checkpoint_dir)
-        
-        if checkpoint_path and os.path.exists(checkpoint_path):
             start_iter, best_val_loss = load_checkpoint(
                 model, optimizers, scheduler, checkpoint_path, device
             )
         else:
-            print("🚀 未找到检查点，从头开始训练")
+            # 自动查找最新检查点
+            checkpoint_path, _ = find_latest_checkpoint(args.checkpoint_dir)
+        
+        #if not os.path.exists(checkpoint_path):
+           # print("🚀 未找到检查点，从头开始训练")
+        total_params = print_detailed_summary(model, optimizers, start_iter, args.max_iters, best_val_loss)
 
         # 5. 加载教师模型
+        print("\n" + "="*60)
         print("\n👨‍🏫 加载教师模型 Qwen3.5-9B")
+        print("="*60)
         teacher_dtype = torch.float16
         teacher_model = AutoModelForCausalLM.from_pretrained(
             args.hf_teacher_model, 
@@ -461,7 +657,7 @@ def main():
 
         # 7. 开始训练
         print("\n" + "="*60)
-        print(f"🚀 开始 OPD 蒸馏训练 | 起始迭代: {global_step}")
+        print(f"🚀 开始 OPD 蒸馏训练 | 数据集: {args.dataset} | 起始迭代: {global_step}")
         print("="*60)
         
         while global_step < args.max_iters:
@@ -511,6 +707,7 @@ def main():
                             "scheduler": scheduler.state_dict(),
                             "iter": global_step,
                             "best_val_loss": best_val_loss,
+                            "dataset": args.dataset  # 记录训练数据集
                         }, save_path)
                         print(f"✅ 保存最优模型: {save_path}")
                         
