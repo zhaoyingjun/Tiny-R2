@@ -96,17 +96,63 @@ def str2bool(v):
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
-def update_config_from_args(args):
-    """Update global config with parsed arguments."""
+import re
+from typing import Any
+
+# 假设全局config对象已定义
+# import config  # 确保导入config模块
+
+def update_config_from_args(args: Any, config_path: str = "config.py") -> None:
+    """
+    更新内存中的全局config，并同步修改config.py文件中的配置值并保存。
+    :param args: 解析后的命令行参数对象
+    :param config_path: config.py文件路径，默认当前目录下的config.py
+    """
+    # 需要同步更新的配置项列表（与原逻辑一致）
     config_attrs = [
         'batch_size', 'ctx_len', 'lr', 'max_iters', 'eval_iters',
         'warmup_iters', 'data_dir', 'n_embd', 'n_head', 'n_layer',
         'n_experts', 'hc', 'mhc', 'attention_types', 'attention_mode',
         'checkpoint_dir', 'save_best_only', 'val_loss_threshold'
     ]
-    
+
+    # ===================== 原有逻辑：更新内存中的config =====================
     for attr in config_attrs:
         setattr(config, attr, getattr(args, attr))
+
+    # ===================== 新增逻辑：修改并保存 config.py 文件 =====================
+    try:
+        # 1. 读取 config.py 原始内容
+        with open(config_path, 'r', encoding='utf-8') as f:
+            file_content = f.read()
+
+        # 2. 遍历配置项，正则替换文件中的对应值
+        for attr in config_attrs:
+            # 获取args中的新值
+            new_value = getattr(args, attr)
+            
+            # 处理值的类型：字符串自动加引号，数字/列表/布尔值直接保留Python语法
+            if isinstance(new_value, str):
+                new_value_str = repr(new_value)  # repr自动处理字符串引号/转义
+            else:
+                new_value_str = str(new_value)   # 数字、列表、布尔等直接转字符串
+
+            # 正则匹配：匹配 "attr = 任意值" 的行（忽略空格，兼容注释前的赋值）
+            # 正则规则：^attr\s*=\s*.+  → 行开头 + 变量名 + 等号 + 任意值
+            pattern = re.compile(rf'^({attr})\s*=\s*.+$', re.MULTILINE)
+            # 替换为新的赋值行
+            file_content = pattern.sub(rf'\1 = {new_value_str}', file_content)
+
+        # 3. 将修改后的内容写回 config.py（覆盖保存）
+        with open(config_path, 'w', encoding='utf-8') as f:
+            f.write(file_content)
+
+        print(f"✅ 配置同步完成！内存config已更新，{config_path} 文件已保存")
+
+    except FileNotFoundError:
+        print(f"❌ 错误：未找到配置文件 {config_path}")
+    except Exception as e:
+        print(f"❌ 写入配置文件失败：{str(e)}")
 
 
 # =============================================================================
@@ -523,7 +569,7 @@ def train(args):
     # Initialize WandB (resume if we have a run_id)
     wandb.init(
         project=args.wandb_project,
-        name="openwebtext",
+        name="pretrain",
         config=vars(args),
         resume="must" if wandb_run_id else False,
         id=wandb_run_id
@@ -781,4 +827,5 @@ def train(args):
 
 if __name__ == "__main__":
     args = parse_arguments()
+    update_config_from_args(args)
     train(args)
