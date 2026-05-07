@@ -698,7 +698,7 @@ def main():
                     if val_loss < best_val_loss:
                         best_val_loss = val_loss
                         # 保存检查点（包含完整状态）
-                        save_path = os.path.join(args.checkpoint_dir, f"best_model_step_{global_step}.pt")
+                        save_path = os.path.join(args.opd_checkpoint_dir, f"best_model_step_{global_step}.pt")
                         model_state = model._orig_mod.state_dict() if hasattr(model, '_orig_mod') else model.state_dict()
                         
                         torch.save({
