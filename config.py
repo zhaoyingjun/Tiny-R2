@@ -5,13 +5,13 @@ import torch
 # -------------------------
 # Training parameters
 # -------------------------
-batch_size = 1
-ctx_len = 2048          # context length
+batch_size = 8
+ctx_len = 2048
 eval_interval = 20
 grad_accum = 16
 max_grad_norm=1.0
 
-lr = 1.5e-4
+lr = 0.00015
 min_lr = 2e-7
 dropout = 0.05
 
@@ -22,23 +22,23 @@ warmup_iters = 200
 resume = True
 res_path = ""
 
-data_dir = "tokenized_data"
+data_dir = 'tokenized_data'
 
 info_levl=1 #1:model parameters and Optimizer and  MoE / Router Info and mhc / mhc Info.2:ALL
 
 # -------------------------
 # Model parameters
 # -------------------------
-n_embd = 768
+n_embd = 1536
 n_head = 16
 n_layer = 6
-n_experts = 32
+n_experts = 8
 num_exp=2
 shared_experts=1
 use_expert_bias = 'True'
 types = ['moe']
-attention_types=['Sparse']
-hc=True
+attention_types = ['Sparse']
+hc = 'True'
 vocab_size = 50257
 init_moe_scaling = 1.25
 
@@ -62,7 +62,7 @@ bias=False
 hc_num_streams = 4
 hc_num_fracs = 1
 hc_disable = False  # note: convert string to bool in training code if needed
-mhc = True
+mhc = 'True'
 sinkhorn_iters = 10
 sinkhorn_tau = 0.05
 mhc_h_res_proj = 'sinkhorn'
@@ -79,7 +79,7 @@ v_residual = True
 nsa_use_branch1 = 1   # Coarse-grained compression (HCA)
 nsa_use_branch2 = 1   # Token selection (CSA)
 nsa_use_branch3 = 1   # Sliding window (SWA)
-attention_mode=['SWA','SWA','CSA','HCA','CSA','HCA']
+attention_mode = ['SWA', 'SWA', 'CSA', 'HCA', 'CSA', 'HCA']
 
 
 
