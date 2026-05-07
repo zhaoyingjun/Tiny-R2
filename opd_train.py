@@ -311,10 +311,18 @@ def parse_args():
     parser.add_argument("--jsd_token_clip", type=float, default=None,
                         help="Token级散度裁剪 (防止风格Token主导梯度)")
 
+    # ===== 真正OPD参数 =====
+    parser.add_argument("--rollout_max_new_tokens", type=int, default=256)
+    parser.add_argument("--rollout_temperature", type=float, default=1.0)
+    parser.add_argument("--rollout_top_p", type=float, default=0.95)
+    parser.add_argument("--rollout_sync_freq", type=int, default=16,
+                        help="每N步同步一次old policy")
+    parser.add_argument("--ppo_clip", type=float, default=0.2)
+
     # 保存
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
     parser.add_argument("--opd_checkpoint_dir", type=str, default="opd_checkpoints")
-    parser.add_argument("--val_freq", type=int, default=50, help="验证频率 (每N步验证一次)")
+    parser.add_argument("--val_freq", type=int, default=1, help="验证频率 (每N步验证一次)")
 
     # 硬件
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
@@ -506,6 +514,23 @@ def generalized_jsd_loss(
 
     return loss
 
+def gather_log_probs(logits, labels):
+    """
+    logits: [B, L, V]
+    labels: [B, L]
+
+    return:
+        token_log_probs: [B, L]
+    """
+    log_probs = F.log_softmax(logits, dim=-1)
+    gathered = torch.gather(
+        log_probs,
+        dim=-1,
+        index=labels.unsqueeze(-1)
+    ).squeeze(-1)
+
+    return gathered
+
 # ====================== 验证函数（致命Bug修复版） ======================
 @torch.inference_mode()  # 比no_grad更快，推理专用
 def validate(model, teacher_model, dataloader, args, ctx):
@@ -521,7 +546,7 @@ def validate(model, teacher_model, dataloader, args, ctx):
     
     # 多卡下禁用tqdm，避免刷屏
     is_main_process = not dist.is_initialized() or dist.get_rank() == 0
-    pbar = tqdm(dataloader, desc="验证中", leave=False) if is_main_process else dataloader
+    pbar = tqdm(dataloader, desc="验证中", leave=False,mininterval=2.0, dynamic_ncols=True) if is_main_process else dataloader
     
     for batch in pbar:
         input_ids = batch["input_ids"].to(args.device)
@@ -762,6 +787,18 @@ def main():
         device = args.device
         model = Transformer().to(device)
         
+        # =========================================================
+        # 真正OPD核心：Old Policy
+        # =========================================================
+        import copy
+
+        old_model = copy.deepcopy(model).eval()
+
+        for p in old_model.parameters():
+            p.requires_grad = False
+
+        print("✅ Old Policy 初始化完成")
+        
         # 【警告修复】自动对齐RMSNorm权重与模型dtype，解决dtype不匹配警告
         model_dtype = next(model.parameters()).dtype
         for name, module in model.named_modules():
@@ -851,56 +888,133 @@ def main():
                 
                 input_ids = batch["input_ids"].to(device)
                 labels = batch["labels"].to(device)
-                
-                # 动态计算prompt长度
-                if (labels != -100).any():
-                    prompt_len = (labels != -100).nonzero(as_tuple=True)[1].min().item()
-                else:
-                    prompt_len = 0
 
-                # 🔥 新增：debug打印有效token数（确认mask正常）
-                if global_step == 0 and accum_step == 0:
-                    valid_tokens = (labels != -100).sum().item()
-                    print(f"\n🔍 第1步验证：有效回复token数 = {valid_tokens} | 总序列长度 = {labels.shape[1]}")
-                    print(f"🔍 正常情况：有效token数应远小于总长度（仅答案部分）")
+                # =========================================================
+                # 真正OPD：On-Policy Rollout
+                # =========================================================
 
-                # 前向传播
+                # prompt部分
+                prompt_mask = labels == -100
+
+                prompt_lens = prompt_mask.sum(dim=1)
+
+                max_prompt_len = prompt_lens.max().item()
+
+                prompt_ids = input_ids[:, :max_prompt_len]
+
+                # ---------------------------------------------------------
+                # rollout sync
+                # ---------------------------------------------------------
+                if global_step % args.rollout_sync_freq == 0 and accum_step == 0:
+                    old_model.load_state_dict(model.state_dict())
+
+                # ---------------------------------------------------------
+                # old policy rollout
+                # ---------------------------------------------------------
                 with torch.no_grad():
-                    t_logits = teacher_model(input_ids).logits
+
+                    generated = old_model.generate(
+                        idx=prompt_ids,
+                        max_new_tokens=args.rollout_max_new_tokens,
+                        temperature=args.rollout_temperature,
+                        top_p=args.rollout_top_p
+                    )
+
+                trajectory_ids = generated[0] if isinstance(generated, tuple) else generated
+
+                # ---------------------------------------------------------
+                # labels构建
+                # prompt部分mask掉
+                # ---------------------------------------------------------
+                traj_labels = trajectory_ids.clone()
+
+                for b in range(trajectory_ids.size(0)):
+                    traj_labels[b, :prompt_lens[b]] = -100
+
+                # sampled token
+                sampled_tokens = trajectory_ids[:, 1:]
+
+                # ---------------------------------------------------------
+                # teacher logits
+                # ---------------------------------------------------------
+                with torch.no_grad():
+                    teacher_logits = teacher_model(
+                        trajectory_ids
+                    ).logits[:, :-1, :]
+
+                # ---------------------------------------------------------
+                # current policy logits
+                # ---------------------------------------------------------
                 with ctx:
-                    s_logits = model(input_ids)[0]
-                
-                # 【核心修正】精准切片生成部分 Logits
-                if prompt_len > 0:
-                    s_logits_chunk = s_logits[:, prompt_len-1:-1, :]
-                    t_logits_chunk = t_logits[:, prompt_len-1:-1, :]
-                    labels_chunk = labels[:, prompt_len:]
-                else:
-                    # 退化情况：没有prompt，全序列都是生成
-                    s_logits_chunk = s_logits[:, :-1, :]
-                    t_logits_chunk = t_logits[:, :-1, :]
-                    labels_chunk = labels[:, 1:]
-                
-                # 【核心修正】使用对齐 TRL 的广义 JSD Loss
-                loss = generalized_jsd_loss(
-                    student_logits=s_logits_chunk,
-                    teacher_logits=t_logits_chunk,
-                    labels=labels_chunk,
+                    student_logits = model(trajectory_ids)[0][:, :-1, :]
+
+                # ---------------------------------------------------------
+                # old policy logits
+                # ---------------------------------------------------------
+                with torch.no_grad():
+                    old_logits = old_model(
+                        trajectory_ids
+                    )[0][:, :-1, :]
+
+                # ---------------------------------------------------------
+                # PPO importance sampling ratio
+                # ---------------------------------------------------------
+                student_logp = gather_log_probs(
+                    student_logits,
+                    sampled_tokens
+                )
+
+                old_logp = gather_log_probs(
+                    old_logits,
+                    sampled_tokens
+                )
+
+                ratio = torch.exp(student_logp - old_logp)
+
+                clipped_ratio = torch.clamp(
+                    ratio,
+                    1.0 - args.ppo_clip,
+                    1.0 + args.ppo_clip
+                )
+
+                # ---------------------------------------------------------
+                # OPD distillation loss
+                # ---------------------------------------------------------
+                token_jsd = generalized_jsd_loss(
+                    student_logits=student_logits,
+                    teacher_logits=teacher_logits,
+                    labels=traj_labels[:, 1:],
                     beta=args.opd_beta,
                     temperature=args.temperature,
                     top_k=args.top_k_loss,
                     token_clip=args.jsd_token_clip,
                     chunk_size=args.opd_chunk_size
                 )
-                
+
+                # ---------------------------------------------------------
+                # PPO-style clipped OPD
+                # ---------------------------------------------------------
+                loss_unclipped = ratio * token_jsd
+                loss_clipped = clipped_ratio * token_jsd
+
+                loss = torch.min(
+                    loss_unclipped,
+                    loss_clipped
+                )
+
+                # mask掉prompt
+                valid_mask = (traj_labels[:, 1:] != -100).float()
+
+                loss = (loss * valid_mask).sum() / valid_mask.sum().clamp(min=1.0)
+
                 loss = loss / args.grad_accum_steps
-                
-                # 【致命Bug修复】GradScaler与分布式兼容处理
+
+                # backward
                 if scaler is not None:
                     scaler.scale(loss).backward()
                 else:
                     loss.backward()
-                    
+
                 total_train_loss += loss.item()
 
             # 参数更新
