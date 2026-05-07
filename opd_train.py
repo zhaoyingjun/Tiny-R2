@@ -712,7 +712,7 @@ def main():
                         print(f"✅ 保存最优模型: {save_path}")
                         
                         # 清理旧检查点
-                        for old_file in glob.glob(os.path.join(args.checkpoint_dir, "best_model_step_*.pt")):
+                        for old_file in glob.glob(os.path.join(args.opd_checkpoint_dir, "best_model_step_*.pt")):
                             if old_file != save_path:
                                 try:
                                     os.remove(old_file)
