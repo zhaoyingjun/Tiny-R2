@@ -77,7 +77,8 @@ python evaluate.py --checkpoint checkpoints/best_model_step_xxx.pt
 ```
 ### 2.4 启动OPD在线蒸馏
 ```
-!python opd_train.py --batch_size 8 --ctx_len 2048 --hf_teacher_model Qwen/Qwen3.5-9B --student_ckpt "./opd_checkpoints/best_model_step_0.pt" --tokenizer_name Qwen/Qwen3.5-9B --dataset mmlu_pro
+python opd_train.py --batch_size 4 --ctx_len 2048 --hf_teacher_model Qwen/Qwen3.5-9B --student_ckpt "./opd_checkpoints/best_model_step_0.pt" --tokenizer_name Qwen/Qwen3.5-9B --dataset mmlu_pro
+     
 ```
 
 ## 核心组件详解
