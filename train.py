@@ -519,7 +519,7 @@ def estimate_loss(model, train_buffer, batch_size, block_size, device, ctx, eval
 def train(args):
     # --- Advanced Gemini Agent Init ---
     agent = None
-    if getattr(args, 'use_gemini_agent', 'False').lower() == 'true':
+    if args.use_agent_observe:
         try:
             from agentic_training import ObserveAgent
             agent = ObserveAgent(api_key=getattr(args, 'gemini_api_key', None))
