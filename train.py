@@ -761,7 +761,7 @@ def train(args):
             
             val_losses_history.append(val_loss)
             # --- 🤖 Advanced AI Agent Control Loop ---
-            if args.use_gemini_agent:
+            if args.use_agent_observe:
                 _step=iteration
                 try:
                     _curr_lr = optimizer.param_groups[0]['lr']
