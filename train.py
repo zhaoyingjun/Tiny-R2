@@ -914,3 +914,4 @@ if __name__ == "__main__":
     args = parse_arguments()
     update_config_from_args(args)
     train(args)
+    
