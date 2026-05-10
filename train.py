@@ -81,6 +81,8 @@ def parse_arguments():
     parser.add_argument('--val_loss_threshold', type=float, default=float('inf'),
                        help="Only save models with val_loss below this threshold")
     
+    parser.add_argument('--use_gemini_agent', type=str, default='False')
+    parser.add_argument('--gemini_api_key', type=str, default=None)
     return parser.parse_args()
 
 
@@ -515,6 +517,16 @@ def estimate_loss(model, train_buffer, batch_size, block_size, device, ctx, eval
 # =============================================================================
 
 def train(args):
+    # --- Advanced Gemini Agent Init ---
+    agent = None
+    if getattr(args, 'use_gemini_agent', 'False').lower() == 'true':
+        try:
+            from agentic_training import ObserveAgent
+            agent = ObserveAgent(api_key=getattr(args, 'gemini_api_key', None))
+            print('\n🤖 [System] Advanced Gemini Agent 已就位，正在进行实时监控和指令解析...\n')
+        except Exception as e:
+            print(f'⚠️ [System] 启动 Advanced Agent 失败: {e}')
+    # -------------------------
     """Main training function with resume support."""
     
     # Update config with CLI arguments
@@ -652,9 +664,44 @@ def train(args):
     
     # Main training loop
     for iteration in range(start_iter, max_iters):
+        for optimizer in optimizers:
+           optimizer.zero_grad(set_to_none=True)
         step_start = time.time()
         loss_accum = 0.0
         all_router_weights = []
+
+
+        training_context={"architecture": {
+        "n_layer": config.n_layer,
+        "n_embd": config.n_embd,
+        "n_head": config.n_head,
+        "n_experts": config.n_experts,
+        "attention_types": config.attention_types,
+        "attention_mode": config.attention_mode,
+        "hc": config.hc,
+        "mhc": config.mhc, },
+
+        "optimization": {
+        "optimizer_types": [type(opt).__name__ for opt in optimizers],
+        "weight_decay": weight_decay,
+        "grad_accum_steps": grad_accum_steps,
+        "max_grad_norm": max_grad_norm,
+        "warmup_iters": warmup_iters,
+        "scheduler": "cosine",
+         },
+
+        "precision": {
+        "dtype": "fp16",
+        "compile": True,
+        "device": device
+        },
+
+        "training": {
+        "batch_size": batch_size,
+        "ctx_len": block_size,
+        "max_iters": max_iters
+        }
+        }
         
         # Gradient accumulation steps
         for _ in range(grad_accum_steps):
@@ -680,7 +727,10 @@ def train(args):
         # Optimizer steps
         for optimizer in optimizers:
             scaler.step(optimizer)
-            optimizer.zero_grad(set_to_none=True)
+
+        
+        # ------------------------------------------
+            #optimizer.zero_grad(set_to_none=True)
         
         scaler.update()
         scheduler.step()
@@ -710,6 +760,41 @@ def train(args):
                   f"lr={scheduler.get_last_lr()[0]:.6f}")
             
             val_losses_history.append(val_loss)
+            # --- 🤖 Advanced AI Agent Control Loop ---
+            if args.use_gemini_agent:
+                _step=iteration
+                try:
+                    _curr_lr = optimizer.param_groups[0]['lr']
+                    _train_loss = loss_accum
+                    _val_loss = val_loss
+
+                    # 计算当前全局梯度范数 (Grad Norm)
+                    _grad_norm = 0.0
+                    for p in model.parameters():
+                        if p.grad is not None:
+                            _grad_norm += p.grad.data.norm(2).item() ** 2
+                    _grad_norm = _grad_norm ** 0.5
+
+                    # 调用 Agent 进行推理和决策
+                    _directive = agent.observe(_step, _train_loss, _val_loss, _curr_lr, _grad_norm,training_context)
+
+                    # 输出 Agent 的自然语言周报
+                    print(f"\n🤖 [Agent Monitor Report]: {_directive.get('message', 'Normal training status.')}")
+
+                    # 执行控制指令 1: 动态修改学习率和max_grad_norm
+                    _new_lr = _directive.get('lr', _curr_lr)
+                    max_grad_norm=_directive.get('max_grad_norm', max_grad_norm)
+                    if abs(_new_lr - _curr_lr) > 1e-10:
+                        print(f"🤖 [Action] Agent 动态调整 LR: {_curr_lr:.2e} -> {_new_lr:.2e}")
+                        for _pg in optimizer.param_groups: _pg['lr'] = _new_lr
+
+                    # 执行控制指令 3: 异常熔断 / 提前停止
+                    if _directive.get('action') == 'stop':
+                        print("🤖 [CRITICAL] Agent 侦测到训练异常（如 Loss 爆炸或梯度失效），正在执行熔断并停止训练！")
+                        break
+
+                except Exception as e:
+                    print(f"⚠️ Agent Control Loop 内部错误: {e}")
             #Check if loss is nan
             #val_loss=torch.tensor(float("nan"))
             if not torch.isfinite(torch.tensor(val_loss)):
