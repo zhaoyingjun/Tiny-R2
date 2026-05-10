@@ -68,9 +68,14 @@ hf auth login --force
 ```
 
 ### 2.2 启动训练
+####2.2.1支持采用Agent进行自主观察和训练调整lr、clip超参，以实现更加稳定的智能化训练;默认不开启；开启后需要使用gemini的api key
 
 ```
 python train.py --n_layer 6 --n_embd 768 --hc 'True' --mhc 'True' --n_experts 32  --max_iters 10000 --attention_types 'Sparse' --batch_size 8 --ctx_len 2048 --hf_dataset 'karpathy/climbmix-400b-shuffle' --resume True --save_best_only True
+```
+####2.2.2 设置 --use_agent_observe开启Agent智能化训练供能，需要填入你的geimini的api key
+```
+python train.py --n_layer 6 --n_embd 1536 --hc 'True' --mhc 'True' --n_experts 8 --max_iters 10000 --attention_types 'Sparse' --batch_size 8 --ctx_len 2048 --hf_dataset 'karpathy/climbmix-400b-shuffle' --resume True --save_best_only True --use_agent_observe False --gemini_api_key "your gemini apikey"
 ```
 ### 2.3 验证模型训练效果PPL
 ```
