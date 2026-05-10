@@ -81,7 +81,7 @@ def parse_arguments():
     parser.add_argument('--val_loss_threshold', type=float, default=float('inf'),
                        help="Only save models with val_loss below this threshold")
     
-    parser.add_argument('--use_gemini_agent', type=str, default='False')
+    parser.add_argument('--use_agent_observe', type=str, default='False')
     parser.add_argument('--gemini_api_key', type=str, default=None)
     return parser.parse_args()
 
