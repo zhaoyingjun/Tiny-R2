@@ -39,7 +39,7 @@ use_expert_bias = 'True'
 types = ['moe']
 attention_types = ['Sparse']
 hc = 'True'
-vocab_size = 50257
+vocab_size = 248044
 init_moe_scaling = 1.25
 
 device = 'cuda' 
