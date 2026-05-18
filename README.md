@@ -81,9 +81,15 @@ python train.py --n_layer 6 --n_embd 1536 --hc 'True' --mhc 'True' --n_experts 8
 ```
 python evaluate.py --checkpoint checkpoints/best_model_step_xxx.pt 
 ```
-### 2.4 启动OPD在线蒸馏
+### 2.4 启动OPD在线蒸馏,使用Qwen3.5-9B模型作为教师模型、Qwen3.5-0.8B作为学生模型进行OPD训练，用RAG增加教师模型，RAG数据集来自问答数据集集medquad，可以复现Readme中的结果;--rag_corpus_path外挂RAG数据集，--custom_qa_path 自定义问题集
 ```
-python opd_train.py --batch_size 4 --ctx_len 2048 --hf_teacher_model Qwen/Qwen3.5-9B --student_ckpt "./opd_checkpoints/best_model_step_0.pt" --tokenizer_name Qwen/Qwen3.5-9B --dataset mmlu_pro
+python opd_train.py  --dataset medquad --enable_rag_teacher --hf_teacher_model Qwen/Qwen3.5-9B --student_model_name Qwen/Qwen3.5-0.8B --batch_size 2  --grad_accum_steps 4 --custom_qa_path baoxianqa.jsonl \
+  --rag_corpus_path baoxianqa.txt
+     
+```
+### 2.5 启动OPD在线蒸馏,使用Qwen3.5-9B模型作为教师模型、Qwen3.5-0.8B作为学生模型进行OPD训练，用RAG增加教师模型;--rag_corpus_path外挂RAG数据集，--custom_qa_path 自定义问题集
+```
+python opd_train.py   --enable_rag_teacher --hf_teacher_model Qwen/Qwen3.5-9B --student_model_name Qwen/Qwen3.5-0.8B --batch_size 2  --grad_accum_steps 4 --custom_qa_path baoxianqa.jsonl --rag_corpus_path baoxianqa.txt
      
 ```
 
