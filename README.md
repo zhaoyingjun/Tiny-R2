@@ -6,6 +6,7 @@
 <img width="1536" height="1024" alt="模型结构" src="https://github.com/user-attachments/assets/2a7c317f-5b61-4abf-8fdf-56dc4e613002" />
 <img width="833" height="441" alt="benchimark" src="https://github.com/user-attachments/assets/bae360e3-b48a-4f01-94ce-07e3c0fc7d3b" />
 <img width="2131" height="891" alt="loss" src="https://github.com/user-attachments/assets/7821bf23-1e81-406b-a867-2396bbe0da63" />
+<img width="1536" height="1024" alt="OPD训练过程和结果评估" src="https://github.com/user-attachments/assets/5d990e4e-0c67-4ff2-933b-9726739af216" />
 
 
 
