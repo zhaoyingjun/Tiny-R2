@@ -94,7 +94,7 @@ def parse_args():
     parser.add_argument('--val_batch_size', type=int, default=4)
     parser.add_argument('--ctx_len', type=int, default=2048)
     parser.add_argument('--lr', type=float, default=2e-5)
-    parser.add_argument('--max_iters', type=int, default=100)
+    parser.add_argument('--max_iters', type=int, default=1000)
     parser.add_argument('--warmup_iters', type=int, default=100)
     parser.add_argument('--grad_accum_steps', type=int, default=4)
     parser.add_argument('--weight_decay', type=float, default=0.01)
