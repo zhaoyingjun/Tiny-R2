@@ -4,8 +4,9 @@ Tiny-R2 OPD 训练 - 知识蒸馏与RAG增强 (Teacher=9B+RAG, Student=0.8B)
 融合特性：
 1. Online Rollout (解决 Exposure Bias) + 动态渐进式退火
 2. Policy Gradient REINFORCE 废话惩罚 (Anti Self-Narration Penalty)
-适配数据集：keivalya/MedQuad-MedicalQnADataset 或本地自定义 JSONL 数据集
-
+3. WandB 企业级监控与 Atomic Checkpoint (已修复断点续训时的优化器与调度器状态对齐)
+4.适配数据集：keivalya/MedQuad-MedicalQnADataset 或本地自定义 JSONL 数据集
+5.支持加载本地数据集实现对行业场景严肃数据和知识的学习
 """
 import os
 import sys
@@ -15,6 +16,7 @@ import glob
 import re
 import config
 import json
+import time  # 耗时计算
 from typing import Optional, List, Dict, Any, Tuple
 from contextlib import nullcontext
 import numpy as np
@@ -32,7 +34,14 @@ from transformers import (
     AutoModelForCausalLM,
 )
 
-# ====================== 新增：RAG 支持所需库 ======================
+# ====================== 优雅的 WandB 异常处理 ======================
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+
+# ====================== RAG 支持所需库 ======================
 try:
     import faiss
     from sentence_transformers import SentenceTransformer
@@ -94,7 +103,7 @@ def parse_args():
     parser.add_argument('--val_batch_size', type=int, default=4)
     parser.add_argument('--ctx_len', type=int, default=2048)
     parser.add_argument('--lr', type=float, default=2e-5)
-    parser.add_argument('--max_iters', type=int, default=1000)
+    parser.add_argument('--max_iters', type=int, default=10000)
     parser.add_argument('--warmup_iters', type=int, default=100)
     parser.add_argument('--grad_accum_steps', type=int, default=4)
     parser.add_argument('--weight_decay', type=float, default=0.01)
@@ -119,10 +128,15 @@ def parse_args():
     parser.add_argument("--rollout_ratio", type=float, default=0.7, help="学生模型自主生成轨迹的最大概率")
     parser.add_argument("--pg_penalty_weight", type=float, default=0.1, help="策略梯度废话惩罚权重")
     
-    # ======= 新增：修复报错所需的命令行参数 =======
+    # 修复报错及控制所需命令行参数
     parser.add_argument("--student_ckpt", type=str, default=None, help="加载学生模型权重路径 (.pt 文件)")
     parser.add_argument("--custom_qa_path", type=str, default=None, help="本地自定义问答 JSONL 数据集路径")
     parser.add_argument("--save_best_only", action="store_true", default=True, help="是否只保留表现最好的检查点")
+
+    # WandB 监控与控制参数（默认为 False，避免用户环境未配置而卡死或报错）
+    parser.add_argument('--enable_wandb', action="store_true", default=True, help="是否启用 WandB 企业级监控")
+    parser.add_argument('--wandb_project', type=str, default="True-OPD-Enterprise")
+    parser.add_argument('--wandb_run_id', type=str, default=None)
     
     return parser.parse_args()
 
@@ -179,25 +193,21 @@ class DualPromptDataset(Dataset):
         instruction = item[self.config["instruction_key"]]
         response = item[self.config["response_key"]]
 
-        # === 独立提取并 Tokenize Response ===
         response_text = response + self.tokenizer.eos_token
         response_ids = self.tokenizer(response_text, return_tensors="pt")["input_ids"].squeeze(0)
 
-        # 预留 Response 的最大安全长度
         max_response_len = self.ctx_len // 2
         if len(response_ids) > max_response_len:
             response_ids = response_ids[:max_response_len]
         
         max_prompt_len = self.ctx_len - len(response_ids)
 
-        # === 构建 Student Prompt ===
         default_s_prompt = "You are a professional assistant." if self.config.get("language") == "en" else "你是一个专业的助手。"
         s_system = self.config.get("student_system_prompt", default_s_prompt)
         s_messages = [{"role": "system", "content": s_system}, {"role": "user", "content": instruction}]
         s_prompt_text = self.tokenizer.apply_chat_template(s_messages, tokenize=False, add_generation_prompt=True)
         s_prompt_ids = self.tokenizer(s_prompt_text, return_tensors="pt")["input_ids"].squeeze(0)
 
-        # === 构建 Teacher Prompt (带 RAG) ===
         if self.args.enable_rag_teacher:
             retrieved_context = self.rag_manager.search(instruction, top_k=self.args.rag_top_k)
             default_t_prompt = "Please answer based on the references:\n{rag_context}" if self.config.get("language") == "en" else "请根据资料解答：\n{rag_context}"
@@ -210,13 +220,11 @@ class DualPromptDataset(Dataset):
         t_prompt_text = self.tokenizer.apply_chat_template(t_messages, tokenize=False, add_generation_prompt=True)
         t_prompt_ids = self.tokenizer(t_prompt_text, return_tensors="pt")["input_ids"].squeeze(0)
 
-        # === 对长出的 Prompt 进行安全的左侧截断 ===
         if len(s_prompt_ids) > max_prompt_len:
             s_prompt_ids = s_prompt_ids[-max_prompt_len:]
         if len(t_prompt_ids) > max_prompt_len:
             t_prompt_ids = t_prompt_ids[-max_prompt_len:]
 
-        # === 拼接组装 ===
         s_input_ids = torch.cat([s_prompt_ids, response_ids])
         t_input_ids = torch.cat([t_prompt_ids, response_ids])
 
@@ -253,7 +261,6 @@ def dual_collate_fn(batch: List[Dict[str, torch.Tensor]], tokenizer):
     s_ids, s_labels = pad_tensors("s_input_ids", "s_labels")
     t_ids, t_labels = pad_tensors("t_input_ids", "t_labels")
 
-    # 保留原始的未拼接 Prompt tensors 以供在线训练时 Rollout 生成
     s_prompt_ids = [item["s_prompt_ids"] for item in batch]
     t_prompt_ids = [item["t_prompt_ids"] for item in batch]
 
@@ -271,7 +278,6 @@ def generalized_jsd_loss_flat(s_valid_logits, t_valid_logits, beta=0.5, temperat
     N, V_s = s_valid_logits.shape
     M, V_t = t_valid_logits.shape
 
-    # 保险校验：确保对齐
     if N != M:
         raise RuntimeError(f"Teacher and Student valid tokens mismatch: {N} vs {M}. Check dataset tokenization logic.")
 
@@ -365,11 +371,9 @@ def main():
     os.makedirs(args.opd_checkpoint_dir, exist_ok=True)
     device = args.device
 
-    # === 新增：初始化分布式进程组以兼容 Muon 优化器 ===
     if not dist.is_initialized():
         os.environ['MASTER_ADDR'] = 'localhost'
         os.environ['MASTER_PORT'] = '29500'
-        # 单卡/单进程训练下使用 'gloo' 后端完成初始化
         dist.init_process_group(backend="gloo", rank=0, world_size=1)
         print("💡 [System] 已自动初始化单进程 Gloo 分布式环境，以兼容 Muon 优化器。")
 
@@ -383,7 +387,6 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
  
-    # >>> 动态将 Tiny-R2 的词表大小与 Tokenizer 保持一致 <<<
     if TINY_R2_AVAILABLE:
         config.vocab_size = len(tokenizer)
         print(f"🔧 已将 Tiny-R2 词表大小 (vocab_size) 动态同步为: {config.vocab_size}")
@@ -393,7 +396,6 @@ def main():
         print(f"📂 正在加载本地自定义数据集: {args.custom_qa_path}")
         ds = load_dataset("json", data_files=args.custom_qa_path, split="train")
         
-        # 尝试自适应提取常见 Key
         first_item = ds[0]
         instruction_key = "question"
         response_key = "answer"
@@ -461,7 +463,7 @@ def main():
         use_scaler = True
         print("\n⚡ 将使用 float16 混合精度 (启用 GradScaler)")
 
-    # === 2. 加载学生模型与初始权重加载 ===
+    # === 2. 加载学生模型与初始化优化器、调度器 ===
     if args.student_model_name.lower() == "tiny-r2" and TINY_R2_AVAILABLE:
         print("\n🤖 加载本地 Tiny-R2 Transformer 作为学生模型")
         student_model = Transformer().to(device)
@@ -471,19 +473,66 @@ def main():
         student_model = AutoModelForCausalLM.from_pretrained(args.student_model_name, torch_dtype=compute_dtype, device_map=device)
         optimizers = [torch.optim.AdamW(student_model.parameters(), lr=args.lr, weight_decay=args.weight_decay)]
 
+    scheduler = CosineAnnealingLR(optimizers[0], T_max=args.max_iters)
+
+    # === 3. 自适应断点续训 (完全对齐：模型、优化器和调度器) ===
+    best_val_loss = float("inf")
+    start_iter = 0
+    loaded_wandb_id = None
+
     if args.student_ckpt:
         if os.path.exists(args.student_ckpt):
-            print(f"🔄 正在加载指定的学生权重初始状态: {args.student_ckpt}")
+            print(f"🔄 正在加载指定的学生权重和状态: {args.student_ckpt}")
             try:
                 ckpt = torch.load(args.student_ckpt, map_location=device)
-                student_model.load_state_dict(ckpt, strict=False)
-                print("✅ 权重加载成功！")
+                if isinstance(ckpt, dict) and 'model' in ckpt:
+                    # 恢复模型参数
+                    student_model.load_state_dict(ckpt['model'], strict=False)
+                    start_iter = ckpt.get('step', 0)
+                    best_val_loss = ckpt.get('best_loss', float('inf'))
+                    loaded_wandb_id = ckpt.get('wandb_run_id', None)
+                    
+                    # 恢复所有关联的优化器状态
+                    if 'optimizer_states' in ckpt:
+                        for opt, opt_state in zip(optimizers, ckpt['optimizer_states']):
+                            opt.load_state_dict(opt_state)
+                        print("✅ 成功对齐并恢复优化器历史状态。")
+                    
+                    # 恢复学习率调度器历史状态
+                    if 'scheduler_state' in ckpt:
+                        scheduler.load_state_dict(ckpt['scheduler_state'])
+                        print("✅ 成功对齐并恢复学习率调度器历史状态。")
+                else:
+                    student_model.load_state_dict(ckpt, strict=False)
+                print("✅ 权重及历史状态加载成功！")
             except Exception as e:
-                print(f"⚠️ 权重加载失败: {e}，将采用模型原初权重开始训练。")
+                print(f"⚠️ 状态加载失败: {e}，将采用模型原初权重和状态开始训练。")
         else:
-            print(f"⚠️ 未找到路径：{args.student_ckpt}，将采用模型原初权重开始训练。")
+            print(f"⚠️ 未找到路径：{args.student_ckpt}，将采用模型原初权重和状态开始训练。")
 
-    scheduler = CosineAnnealingLR(optimizers[0], T_max=args.max_iters)
+    if loaded_wandb_id and not args.wandb_run_id:
+        args.wandb_run_id = loaded_wandb_id
+
+    # === 4. 容错版 WandB 监控初始化 ===
+    if args.enable_wandb:
+        if WANDB_AVAILABLE:
+            try:
+                wandb.init(
+                    project=args.wandb_project, 
+                    name=f"tiny-r2-opd-{args.dataset}", 
+                    config=vars(args), 
+                    resume="must" if args.wandb_run_id else False, 
+                    id=args.wandb_run_id
+                )
+                if wandb.run is not None:
+                    args.wandb_run_id = wandb.run.id
+                print(f"🚀 WandB 监控服务成功开启 (ID: {args.wandb_run_id})")
+            except Exception as e:
+                print(f"⚠️ WandB 初始化失败: {e}。将以纯本地模式运行，不上传日志。")
+                args.enable_wandb = False
+        else:
+            print("⚠️ 未检测到已安装的 `wandb`，已自动切换为纯本地无监控运行。")
+            args.enable_wandb = False
 
     print(f"\n👨‍🏫 加载教师模型: {args.hf_teacher_model}")
     teacher_model = AutoModelForCausalLM.from_pretrained(args.hf_teacher_model, torch_dtype=compute_dtype, device_map=device).eval()
@@ -493,18 +542,18 @@ def main():
     ctx = torch.amp.autocast(device_type="cuda", dtype=compute_dtype) if "cuda" in device else nullcontext()
     scaler = amp.GradScaler(enabled=use_scaler)
 
-    global_step = 0
-    best_val_loss = float("inf")
+    global_step = start_iter
     train_iter = iter(train_loader)
     
     student_model.train()
     print("\n🔥 开始双路Agent OPD 蒸馏...")
     
     while global_step < args.max_iters:
+        step_start = time.time()
         student_model.zero_grad()
         total_train_loss = 0.0
+        avg_penalty_display = 0.0
         
-        # 动态渐进式退火计算
         warmup_opd_steps = int(args.max_iters * 0.2)
         ramp_steps = int(args.max_iters * 0.6)
         
@@ -530,26 +579,21 @@ def main():
                 t_input_list, t_label_list = [], []
                 student_texts, penalties = [], []
                 
-                # 逐样本动态 Rollout 生成
                 for i in range(len(batch["s_prompt_ids"])):
                     s_p_ids = batch["s_prompt_ids"][i].to(device)
                     t_p_ids = batch["t_prompt_ids"][i].to(device)
                     
-                    # === 适配器：智能判断是自定义 Tiny-R2 还是 HuggingFace 模型 ===
                     is_custom_transformer = (student_model.__class__.__name__ == "Transformer")
                     
                     with torch.no_grad():
                         if is_custom_transformer:
-                            # 1. 本地 Tiny-R2 Transformer 模型生成逻辑
                             gen_out = student_model.generate(
                                 idx=s_p_ids.unsqueeze(0),
                                 max_new_tokens=args.ctx_len // 2,
                                 temperature=args.temperature
                             )
-                            # Tiny-R2 的 generate() 返回元组 (generated_ids, kv_cache_size_gb)
                             generated_ids = gen_out[0]
                         else:
-                            # 2. HuggingFace 标准模型生成逻辑
                             generated_ids = student_model.generate(
                                 s_p_ids.unsqueeze(0),
                                 max_new_tokens=args.ctx_len // 2,
@@ -624,6 +668,8 @@ def main():
             # REINFORCE 策略梯度废话惩罚逻辑
             if use_rollout and batch_penalties is not None:
                 avg_penalty = batch_penalties.mean().item()
+                avg_penalty_display += avg_penalty / args.grad_accum_steps
+                
                 if avg_penalty > 0:
                     s_logprobs = F.log_softmax(s_valid_logits, dim=-1)
                     gen_logprobs = s_logprobs.gather(1, s_valid_labels.unsqueeze(-1)).squeeze(-1)
@@ -655,23 +701,66 @@ def main():
         scheduler.step()
         global_step += 1
 
+        # ================= WandB & 终端日志记录 =================
+        step_time = time.time() - step_start
+        current_lr = scheduler.get_last_lr()[0]
+
+        log_dict = {
+            "train/loss": total_train_loss,
+            "train/pg_penalty": avg_penalty_display,
+            "train/learning_rate": current_lr,
+            "perf/iter_time_s": step_time,
+            "train/global_step": global_step,
+            "train/is_rollout": int(use_rollout),
+            "train/current_rollout_ratio": current_rollout_ratio
+        }
+        if device == "cuda":
+            log_dict["perf/max_mem_gb"] = torch.cuda.max_memory_allocated() / 1e9
+        
+        if args.enable_wandb:
+            wandb.log(log_dict, step=global_step)
+
+        if global_step % 10 == 0:
+            print(f"Step {global_step:04d} | Rollout: {'✅' if use_rollout else '❌'} | Loss: {total_train_loss:.4f} | Penalty: {avg_penalty_display:.2f} | LR: {current_lr:.2e}")
+
+        # ================= 验证与保存 (保存完全状态) =================
         if global_step % args.val_freq == 0:
             val_loss = validate(student_model, teacher_model, val_loader, args, ctx)
-            print(f"Step {global_step:04d} | Rollout: {'✅' if use_rollout else '❌'} | Train Loss: {total_train_loss:.4f} | Val Loss: {val_loss:.4f}")
-            if val_loss < best_val_loss:
+            is_best = val_loss < best_val_loss
+            print(f"\n📊 Validation | Step={global_step} | Val Loss={val_loss:.4f} | Best={best_val_loss:.4f}\n")
+
+            if args.enable_wandb:
+                wandb.log({"eval/loss": val_loss, "eval/is_new_best": is_best}, step=global_step)
+
+            if is_best:
                 best_val_loss = val_loss
                 save_path = os.path.join(args.opd_checkpoint_dir, f"student_best_model_step_{global_step}.pt")
-                torch.save(student_model.state_dict(), save_path)
-                print(f"✅ 保存新模型: {save_path}")
                 
-                # 修复原保存清理代码中对 args.save_dir 的未定义引用
+                # 完全状态保存包 (模型参数 + 优化器状态 + 调度器状态 + 训练进度)
+                save_data = {
+                    'model': student_model.state_dict(),
+                    'optimizer_states': [opt.state_dict() for opt in optimizers],
+                    'scheduler_state': scheduler.state_dict(),
+                    'step': global_step,
+                    'best_loss': best_val_loss,
+                    'wandb_run_id': args.wandb_run_id if args.enable_wandb else None
+                }
+                torch.save(save_data, save_path)
+                print(f"🏆 发现更优模型! 保存完整训练状态至: {save_path}\n")
+                
                 if args.save_best_only:
                     for old_file in glob.glob(os.path.join(args.opd_checkpoint_dir, "student_best_model_step_*.pt")):
                         if old_file != save_path:
                             try:
                                 os.remove(old_file)
                                 print(f"🧹 已清理旧检查点: {os.path.basename(old_file)}")
-                            except Exception: pass
+                            except Exception: 
+                                pass
+
+    print("🎉 训练圆满完成！")
+    if args.enable_wandb:
+        wandb.finish()
 
 if __name__ == "__main__":
     main()
+
