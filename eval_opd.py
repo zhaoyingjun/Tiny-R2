@@ -229,7 +229,19 @@ def main():
     print(f"\n[{'='*20} 正在评估 OPD Student (0.8B) {'='*20}]")
     opd_model = AutoModelForCausalLM.from_pretrained(args.student_base_model, torch_dtype=compute_dtype, device_map=args.device)
     print(f"📥 正在加载 OPD 权重: {args.student_opd_model}")
-    opd_model.load_state_dict(torch.load(args.student_opd_model, map_location=args.device), strict=False)
+    
+
+    checkpoint = torch.load(args.student_opd_model, map_location=args.device)
+    if isinstance(checkpoint, dict) and 'model' in checkpoint:
+        print("✅ 检测到完整训练状态包，正在提取 'model' 权重...")
+        state_dict = checkpoint['model']
+    else:
+        print("ℹ️ 未检测到状态包装，按常规权重直接加载...")
+        state_dict = checkpoint
+        
+    opd_model.load_state_dict(state_dict, strict=False)
+    # ----------------------
+    
     results["opd_student"] = generate_responses(opd_model, tokenizer, student_prompts, args)
     del opd_model
     torch.cuda.empty_cache()
@@ -246,7 +258,7 @@ def main():
     # ================= 计算指标与打印报告 =================
     print("\n" + "="*50)
     print("📈 评估指标对比 (以 Teacher+RAG 的回答作为金标准参考)")
-    print("目标: OPD Student 分数应显著高于 Base Student，证明其吸收了Teacher特征")
+    print("目标: OPD Student 分数应高于 Base Student，证明其吸收了Teacher特征")
     print("="*50)
     
     base_vs_teacher = calculate_metrics(results["base_student"], results["teacher_rag"], config["language"])
@@ -262,7 +274,7 @@ def main():
     import random
     sample_idx = random.randint(0, args.eval_samples - 1)
     
-    print(f"【患者问题】:\n{results['questions'][sample_idx]}\n")
+    print(f"【问题】:\n{results['questions'][sample_idx]}\n")
     print(f"【Teacher (9B+RAG) 权威回复】:\n{results['teacher_rag'][sample_idx]}\n")
     print(f"【Base Student (未经训练 0.8B) 回复】:\n{results['base_student'][sample_idx]}\n")
     print(f"【✅ OPD Student (蒸馏后 0.8B) 回复】:\n{results['opd_student'][sample_idx]}\n")
