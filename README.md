@@ -1,21 +1,9 @@
 # Tiny-R2: A Hybrid Architecture Combining SWA, CSA, HCA, mHC and DSMoE Under the DeepSeek V4 Design Paradigm
 
-
-
-
 <img width="1536" height="1024" alt="模型结构" src="https://github.com/user-attachments/assets/2a7c317f-5b61-4abf-8fdf-56dc4e613002" />
 <img width="833" height="441" alt="benchimark" src="https://github.com/user-attachments/assets/bae360e3-b48a-4f01-94ce-07e3c0fc7d3b" />
 <img width="2131" height="891" alt="loss" src="https://github.com/user-attachments/assets/7821bf23-1e81-406b-a867-2396bbe0da63" />
 <img width="1536" height="1024" alt="OPD训练过程和结果评估" src="https://github.com/user-attachments/assets/5d990e4e-0c67-4ff2-933b-9726739af216" />
-
-
-
-
-
-
-
-
-
 
 
 # Tiny-R2 模型架构与训练流程文档
@@ -90,7 +78,7 @@ python opd_train.py  --dataset pubmed_qa  --hf_teacher_model Qwen/Qwen3.5-9B --s
 ```
 #### 2.4.2 使用Qwen3.5-9B模型作为教师模型、Qwen3.5-0.8B作为学生模型进行OPD训练，用RAG增加教师模型;--rag_corpus_path外挂RAG数据集，--custom_qa_path 自定义问题集
 ```
-python opd_train.py   - --hf_teacher_model Qwen/Qwen3.5-9B --student_model_name Qwen/Qwen3.5-0.8B --batch_size 2  --grad_accum_steps 4 --custom_qa_path baoxianqa.jsonl --rag_corpus_path baoxianqa.txt
+python opd_train.py   --hf_teacher_model Qwen/Qwen3.5-9B --student_model_name Qwen/Qwen3.5-0.8B --batch_size 2  --grad_accum_steps 4 --custom_qa_path baoxianqa.jsonl --rag_corpus_path baoxianqa.txt
      
 ```
 #### 2.4.3 使用Qwen3.5-9B模型作为教师模型、Tiny-R2作为学生模型进行OPD训练，用RAG增加教师模型;--rag_corpus_path外挂RAG数据集，--custom_qa_path 自定义问题集
