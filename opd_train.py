@@ -1,15 +1,7 @@
 #!/usr/bin/env python3
 """
 Tiny-R2 OPD 训练 v2 - 知识蒸馏与RAG增强 (Teacher=9B+RAG, Student=0.8B)
-学术级重构更新：
-1. 彻底防范检索泄露（Retrieval Leakage）：RAG 语料库构建完全隔离验证与测试集。
-2. 引入 OOD 评估集（MedQA USMLE 4-options）以客观评估泛化性能。
-3. 增加 RAG 评测指标（Hit Rate @ K, MRR）。
-4. 增加一键消融实验矩阵控制开关 (--ablation_mode)。
-5. 修复正则提取匹配中中括号、星号过滤不全导致评估准确率下降的 Bug。
-6. 解决训练与验证前向计算中因 Padding 未传递 Attention Mask 带来的表征畸变。
-7. 对齐 PubMedQA 与 MedQA 评估提示词结构，减少 0.8B 级别模型的格式迁移偏离。
-8. 增加 --student_use_rag 开关，支持学生在“利用 RAG 检索信息”和“完全闭卷知识内化”两种模式间切换。
+学术级重构更新（支持本地自定义 QA 数据集与 RAG 语料库路径，完美支持 Muon+AdamW 双优化器组合）
 """
 import os
 import sys
@@ -70,7 +62,7 @@ except ImportError as e:
     print(f"ℹ️ 未检测到 Tiny-R2 模块，将强制使用 HuggingFace 模型。")
     TINY_R2_AVAILABLE = False
 
-# 数据集配置注册表（结构化对齐以防 0.8B 小模型格式偏离）
+# 数据集配置注册表
 DATASET_CONFIGS = {
     "pubmed_qa": {
         "hf_path": "pubmed_qa",
@@ -79,6 +71,7 @@ DATASET_CONFIGS = {
         "language": "en",
         "instruction_key": "question",
         "response_key": "answer",
+        "is_mcq": False,
         "student_system_prompt": (
             "You are an expert clinical assistant. For the given question, "
             "first analyze and reason step-by-step in plain text (keep it concise, under 3 sentences). "
@@ -109,6 +102,7 @@ DATASET_CONFIGS = {
         "language": "en",
         "instruction_key": "question",
         "response_key": "answer_idx",
+        "is_mcq": True,
         "student_system_prompt": (
             "You are an expert clinical assistant. For the given question, "
             "first analyze and reason step-by-step in plain text. "
@@ -129,6 +123,37 @@ DATASET_CONFIGS = {
             "[Retrieved Context]\n{rag_context}\n\n"
             "First, analyze and reason step-by-step in plain text. "
             "Then, provide your final conclusion at the very end using the exact format: '[Final Decision]: A', '[Final Decision]: B', '[Final Decision]: C', or '[Final Decision]: D'.\n\n"
+            "Now answer the user's question using the provided context."
+        )
+    },
+    "custom": {
+        "hf_path": "custom",
+        "hf_subset": None,
+        "split": "train",
+        "language": "en",
+        "instruction_key": "question",
+        "response_key": "answer",
+        "is_mcq": False,
+        "student_system_prompt": (
+            "You are an expert assistant. For the given question, "
+            "first analyze and reason step-by-step in plain text (keep it concise, under 3 sentences). "
+            "Then, provide your final conclusion at the very end using the exact format: '[Final Decision]: yes', '[Final Decision]: no', or '[Final Decision]: maybe'.\n\n"
+            "Now answer the user's question following the same format."
+        ),
+        "student_rag_system_prompt": (
+            "You are an expert assistant. You will be provided with a 'Retrieved Context' and a 'Question'. "
+            "Your task is to answer the question based on the provided Retrieved Context.\n\n"
+            "[Retrieved Context]\n{rag_context}\n\n"  
+            "First, analyze and reason step-by-step in plain text (keep it concise, under 3 sentences). "
+            "Then, provide your final conclusion at the very end using the exact format: '[Final Decision]: yes', '[Final Decision]: no', or '[Final Decision]: maybe'.\n\n"
+            "Now answer the user's question using the provided context."
+        ),
+        "teacher_system_prompt": (
+            "You are an expert assistant. You will be provided with a 'Retrieved Context' and a 'Question'. "
+            "Your task is to answer the question based on the provided Retrieved Context.\n\n"
+            "[Retrieved Context]\n{rag_context}\n\n"  
+            "First, analyze and reason step-by-step in plain text (keep it concise, under 3 sentences). "
+            "Then, provide your final conclusion at the very end using the exact format: '[Final Decision]: yes', '[Final Decision]: no', or '[Final Decision]: maybe'.\n\n"
             "Now answer the user's question using the provided context."
         )
     }
@@ -223,10 +248,14 @@ def parse_args():
     parser.add_argument("--student_model_name", type=str, default="Qwen/Qwen3.5-0.8B")
     parser.add_argument("--tokenizer_name", type=str, default="Qwen/Qwen3.5-9B")
     
-    # 核心开关设计：控制学生是否开启外部检索
+    # 本地自定义文件加载参数
+    parser.add_argument("--custom_qa_path", type=str, default=None, help="本地自定义 QA JSONL 数据集文件路径")
+    parser.add_argument("--rag_corpus_path", type=str, default=None, help="本地自定义 RAG 检索库文件路径（支持 .txt 或 .jsonl）")
+
+    # 核心开关设计
     parser.add_argument("--student_use_rag", action="store_true", default=False, 
-                        help="学生在训练和推理时是否使用 RAG 上下文。若开启，则学生学习如何利用 RAG 信息；若关闭，则进行无检索的知识内化")
-    parser.add_argument("--disable_rag_teacher", action="store_true", help="禁用 RAG 增强，仅使用基础 Prompt")
+                        help="学生在训练和推理时是否使用 RAG 上下文。")
+    parser.add_argument("--disable_rag_teacher", action="store_true", help="禁用 RAG 增强")
     
     parser.add_argument("--rag_top_k", type=int, default=3)
     parser.add_argument("--alpha", type=float, default=0.4)
@@ -260,9 +289,6 @@ def parse_args():
 
 # ====================== 严防泄露的 RAG 管理器 ======================
 class CleanMedicalRAGManager:
-    """
-    防检索泄露的高校 RAG 检索器。
-    """
     def __init__(self, corpus: List[Dict[str, str]], dense_model_name="BAAI/bge-small-en-v1.5", device="cuda"):
         self.corpus = corpus
         self.texts = [doc["text"] for doc in corpus]
@@ -354,7 +380,9 @@ class DualPromptDataset(Dataset):
             gold_choice = item.get("answer_idx", "A")
             response = f"Analysis: Guided by biomedical rationale...\n\n[Final Decision]: {gold_choice}"
         else:
-            response = item[self.config["response_key"]]
+            response = item.get(self.config["response_key"], "")
+            if "[Final Decision]" not in response:
+                response = f"Analysis: Processed customized input.\n\n[Final Decision]: {response}"
 
         response_text = response + self.tokenizer.eos_token
         response_ids = self.tokenizer(response_text, return_tensors="pt")["input_ids"].squeeze(0)
@@ -365,14 +393,12 @@ class DualPromptDataset(Dataset):
         
         max_prompt_len = self.ctx_len - len(response_ids)
 
-        # ----------------- 判定是否需要检索以及进行检索 -----------------
         need_rag = (not self.args.disable_rag_teacher) or self.args.student_use_rag
         if need_rag and self.args.ablation_mode != "vanilla_sft":
             retrieved_context, _ = self.rag_manager.retrieve(instruction, top_k=self.args.rag_top_k, alpha=self.args.alpha)
         else:
             retrieved_context = ""
 
-        # ----------------- 1. 构建学生端 Prompt (控制 RAG 开关) -----------------
         if self.args.student_use_rag and retrieved_context:
             s_system_template = self.config.get("student_rag_system_prompt", "Please answer based on reference:\n{rag_context}")
             s_system = s_system_template.format(rag_context=retrieved_context)
@@ -388,7 +414,6 @@ class DualPromptDataset(Dataset):
             
         s_prompt_ids = self.tokenizer(s_prompt_text, return_tensors="pt")["input_ids"].squeeze(0)
 
-        # ----------------- 2. 构建教师端 Prompt (总是带 RAG) -----------------
         if not self.args.disable_rag_teacher and self.args.ablation_mode != "vanilla_sft" and retrieved_context:
             t_system_template = self.config.get("teacher_system_prompt", "Please answer based on reference:\n{rag_context}")
             t_system = t_system_template.format(rag_context=retrieved_context)
@@ -514,7 +539,7 @@ def extract_valid_logits(logits, labels):
     valid_mask = flat_labels != -100
     return flat_logits[valid_mask], flat_labels[valid_mask]
 
-# ====================== 严密验证与评测（包含 OOD 评测与 RAG 指标） ======================
+# ====================== 严密验证与评测 ======================
 @torch.inference_mode()
 def validate(student_model, teacher_model, dataloader, args, ctx):
     student_model.eval()
@@ -575,9 +600,6 @@ def validate_comprehensive_accuracy(
     num_samples=20,
     ood_dataset_raw=None
 ) -> Tuple[float, float, float, float, float, float]:
-    """
-    全面的多维度模型精度和 RAG 效果指标评估（支持 OOD 分布外测试，可控学生 RAG 的注入）
-    """
     device = args.device
     student_model.eval()
     student_base_model.eval()
@@ -600,6 +622,7 @@ def validate_comprehensive_accuracy(
 
     is_custom_transformer = (student_model.__class__.__name__ == "Transformer")
     is_pubmed_qa = (dataset_config.get("hf_path") == "pubmed_qa")
+    is_mcq = dataset_config.get("is_mcq", False)
 
     for idx, sample in enumerate(eval_samples):
         question = sample[dataset_config["instruction_key"]]
@@ -650,9 +673,9 @@ def validate_comprehensive_accuracy(
             generated_student = tokenizer.decode(outputs_student[0][inputs_student.input_ids.shape[1]:], skip_special_tokens=True)
             generated_base = tokenizer.decode(outputs_base[0][inputs_student.input_ids.shape[1]:], skip_special_tokens=True)
             
-        pred_base = normalize_answer(generated_base, is_mcq=not is_pubmed_qa)
+        pred_base = normalize_answer(generated_base, is_mcq=is_mcq)
         results_base.append(pred_base == gold_answer)
-        pred_student = normalize_answer(generated_student, is_mcq=not is_pubmed_qa)
+        pred_student = normalize_answer(generated_student, is_mcq=is_mcq)
         results_student.append(pred_student == gold_answer)
 
         # 3. 评测 RAG 教师模型的准确率
@@ -673,7 +696,7 @@ def validate_comprehensive_accuracy(
 
         outputs_rag = teacher_model.generate(**inputs_teacher, max_new_tokens=128, do_sample=False, pad_token_id=tokenizer.pad_token_id)
         generated_rag = tokenizer.decode(outputs_rag[0][inputs_teacher.input_ids.shape[1]:], skip_special_tokens=True)
-        pred_rag = normalize_answer(generated_rag, is_mcq=not is_pubmed_qa)
+        pred_rag = normalize_answer(generated_rag, is_mcq=is_mcq)
         results_rag.append(pred_rag == gold_answer)
 
         if idx < 3:
@@ -776,15 +799,62 @@ def main():
     if TINY_R2_AVAILABLE:
         config.vocab_size = len(tokenizer)
 
-    dataset_config = DATASET_CONFIGS.get(args.dataset)
-    if not dataset_config:
-        raise ValueError(f"无法识别指定的数据集: {args.dataset}")
-
-    print(f"📡 载入 ID 数据集: {args.dataset}")
-    if dataset_config.get("hf_subset"):
-        ds = load_dataset(dataset_config["hf_path"], dataset_config["hf_subset"], split=dataset_config["split"])
+    # ---------------- 载入数据集（支持本地与 Hugging Face 切换） ----------------
+    if args.custom_qa_path:
+        print(f"📡 载入本地自定义 QA 数据集: {args.custom_qa_path}")
+        custom_data = []
+        with open(args.custom_qa_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                if line.strip():
+                    custom_data.append(json.loads(line))
+        
+        from datasets import Dataset
+        ds = Dataset.from_list(custom_data)
+        dataset_config = DATASET_CONFIGS["custom"]
+        
+        # 自动判定是否包含中文并切换 Prompt 语境
+        is_zh = False
+        if len(custom_data) > 0:
+            first_sample_str = str(custom_data[0])
+            if re.search(r'[\u4e00-\u9fff]', first_sample_str):
+                is_zh = True
+        
+        # 自动判定是否为选择题(MCQ)
+        if is_zh:
+            print("🇨🇳 检测到中文数据集内容，已切换 Prompt 至中文模式。")
+            dataset_config["student_system_prompt"] = (
+                "你是一个专业的智能助手。针对给定的问题，首先在正文中进行清晰、简明扼要的逐步分析与推理（保持在3句以内）。"
+                "然后在最后使用以下格式给出你的最终结论: '[Final Decision]: yes'（是）、'[Final Decision]: no'（否）或 '[Final Decision]: maybe'（可能）。\n\n"
+                "现在请按照上述格式回答用户的问题。"
+            )
+            dataset_config["student_rag_system_prompt"] = (
+                "你是一个专业的智能助手。你将获得‘检索到的背景信息’和‘问题’。请根据提供的背景信息回答问题。\n\n"
+                "[Retrieved Context]\n{rag_context}\n\n"
+                "首先在正文中进行清晰、简明扼要的逐步分析与推理（保持在3句以内），然后在最后使用以下格式给出最终结论: '[Final Decision]: yes'、'[Final Decision]: no' 或 '[Final Decision]: maybe'。\n\n"
+                "现在请利用提供的背景信息回答问题。"
+            )
+            dataset_config["teacher_system_prompt"] = dataset_config["student_rag_system_prompt"]
+            dataset_config["is_mcq"] = False
+        else:
+            # 英文单选题自适应
+            if len(custom_data) > 0:
+                first_ans = str(custom_data[0].get("answer", "")).strip().upper()
+                if len(first_ans) == 1 and first_ans in "ABCD":
+                    dataset_config["is_mcq"] = True
+                    print("📝 自动识别为单项选择题模式(A/B/C/D)。")
+                else:
+                    dataset_config["is_mcq"] = False
+                    print("📝 自动识别为是非问答模式(yes/no/maybe)。")
     else:
-        ds = load_dataset(dataset_config["hf_path"], split=dataset_config["split"])
+        dataset_config = DATASET_CONFIGS.get(args.dataset)
+        if not dataset_config:
+            raise ValueError(f"无法识别指定的数据集: {args.dataset}")
+
+        print(f"📡 载入 Hugging Face 线上数据集: {args.dataset}")
+        if dataset_config.get("hf_subset"):
+            ds = load_dataset(dataset_config["hf_path"], dataset_config["hf_subset"], split=dataset_config["split"])
+        else:
+            ds = load_dataset(dataset_config["hf_path"], split=dataset_config["split"])
 
     val_size = max(1, int(len(ds) * 0.1)) if len(ds) > 1 else 0
     if val_size == 0:
@@ -794,9 +864,43 @@ def main():
         train_ds = ds.select(range(val_size, len(ds)))
         val_ds_raw = ds.select(range(val_size))
 
+    # ---------------- 构建 RAG 语料库（支持本地与自动生成） ----------------
     print("🔒 正在构建标准 RAG 语料库...")
     corpus = []
-    if args.dataset == "pubmed_qa":
+    if args.rag_corpus_path:
+        print(f"🔒 正在从自定义路径 {args.rag_corpus_path} 构建 RAG 语料库...")
+        if args.rag_corpus_path.endswith('.jsonl'):
+            with open(args.rag_corpus_path, 'r', encoding='utf-8') as f:
+                for i, line in enumerate(f):
+                    if line.strip():
+                        data = json.loads(line)
+                        text_content = data.get("text", data.get("content", str(data)))
+                        corpus.append({
+                            "pubid": data.get("pubid", str(i)),
+                            "text": text_content
+                        })
+        else:
+            # 读取原始文本（按段落或行切割）
+            with open(args.rag_corpus_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                paragraphs = [p.strip() for p in content.split('\n\n') if p.strip()]
+                if len(paragraphs) < 5:
+                    paragraphs = [line.strip() for line in content.split('\n') if line.strip()]
+                for i, para in enumerate(paragraphs):
+                    corpus.append({
+                        "pubid": f"doc_{i}",
+                        "text": para
+                    })
+    elif args.custom_qa_path:
+        # 如果提供了自定义 QA 数据集但没有指定独立 RAG 库，从 QA 中抽取上下文
+        for i, item in enumerate(ds):
+            inst_text = item.get(dataset_config["instruction_key"], "")
+            resp_text = item.get(dataset_config["response_key"], "")
+            corpus.append({
+                "pubid": str(i),
+                "text": f"{inst_text} {resp_text}".strip()
+            })
+    elif args.dataset == "pubmed_qa":
         for item in ds:
             abstract_text = " ".join(item["context"]["contexts"])
             corpus.append({
@@ -845,7 +949,11 @@ def main():
         student_model = Transformer().to(device)
         student_base_model = Transformer().to(device)
         if hasattr(student_model, "configure_optimizers"):
-            optimizers = [student_model.configure_optimizers(args.weight_decay, args.lr, device)]
+            opts = student_model.configure_optimizers(args.weight_decay, args.lr, device)
+            if isinstance(opts, (list, tuple)):
+                optimizers = list(opts)
+            else:
+                optimizers = [opts]
         else:
             optimizers = [torch.optim.AdamW(student_model.parameters(), lr=args.lr, weight_decay=args.weight_decay)]
     else:
@@ -854,7 +962,7 @@ def main():
         optimizers = [torch.optim.AdamW(student_model.parameters(), lr=args.lr, weight_decay=args.weight_decay)]
 
     is_hf = hasattr(student_model, "config")
-    scheduler = CosineAnnealingLR(optimizers[0], T_max=args.max_iters)
+    schedulers = [CosineAnnealingLR(opt, T_max=args.max_iters) for opt in optimizers]
 
     if args.ablation_mode != "vanilla_sft":
         print(f"👨‍🏫 加载教师模型进行对齐蒸馏: {args.hf_teacher_model}")
@@ -876,6 +984,14 @@ def main():
                 start_iter = ckpt.get('step', 0)
                 best_val_loss = ckpt.get('best_loss', float('inf'))
                 loaded_wandb_id = ckpt.get('wandb_run_id', None)
+                if 'optimizer_states' in ckpt:
+                    for opt, opt_state in zip(optimizers, ckpt['optimizer_states']):
+                        opt.load_state_dict(opt_state)
+                if 'scheduler_states' in ckpt:
+                    for sched, sched_state in zip(schedulers, ckpt['scheduler_states']):
+                        sched.load_state_dict(sched_state)
+                elif 'scheduler_state' in ckpt and len(schedulers) == 1:
+                    schedulers[0].load_state_dict(ckpt['scheduler_state'])
             else:
                 student_model.load_state_dict(ckpt, strict=False)
             print("✅ 成功加载断点检查点并完成对齐。")
@@ -1055,7 +1171,8 @@ def main():
             total_train_loss += loss.item()
 
         if use_scaler:
-            scaler.unscale_(optimizers[0])
+            for opt in optimizers:
+                scaler.unscale_(opt)
             torch.nn.utils.clip_grad_norm_(student_model.parameters(), args.max_grad_norm)
             for opt in optimizers:
                 scaler.step(opt)
@@ -1065,11 +1182,12 @@ def main():
             for opt in optimizers:
                 opt.step()
                 
-        scheduler.step()
+        for sched in schedulers:
+            sched.step()
         global_step += 1
 
         step_time = time.time() - step_start
-        current_lr = scheduler.get_last_lr()[0]
+        current_lr = schedulers[0].get_last_lr()[0]
 
         if global_step % 10 == 0:
             print(f"Step {global_step:04d} | Ablation: {args.ablation_mode} | Rollout: {'✅' if use_rollout else '❌'} | Loss: {total_train_loss:.4f} | Penalty: {avg_penalty_display:.2f} | LR: {current_lr:.2e}")
@@ -1103,7 +1221,8 @@ def main():
                 save_data = {
                     'model': student_model.state_dict(),
                     'optimizer_states': [opt.state_dict() for opt in optimizers],
-                    'scheduler_state': scheduler.state_dict(),
+                    'scheduler_states': [sched.state_dict() for sched in schedulers],
+                    'scheduler_state': schedulers[0].state_dict(),
                     'step': global_step,
                     'best_loss': best_val_loss,
                     'wandb_run_id': args.wandb_run_id if args.enable_wandb else None
@@ -1125,3 +1244,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
