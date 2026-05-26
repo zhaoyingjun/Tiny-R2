@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Tiny-R2 OPD 训练 v2 - 知识蒸馏与RAG增强 (Teacher=9B+RAG, Student=0.8B)
-学术级重构更新（支持本地自定义 QA 数据集与 RAG 语料库路径，完美支持 Muon+AdamW 双优化器组合）
+支持本地自定义 QA 数据集与 RAG 语料库路径，完美支持 Muon+AdamW 双优化器组合
 """
 import os
 import sys
