@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Tiny-R2 OPD 训练 v2 - 知识蒸馏与RAG增强 (Teacher=9B+RAG, Student=0.8B)
-支持本地自定义 QA 数据集与 RAG 语料库路径，完美支持 Muon+AdamW 双优化器组合
+学术级重构更新（支持本地自定义 QA 数据集与 RAG 语料库路径，完美支持 Muon+AdamW 双优化器组合）
 """
 import os
 import sys
@@ -744,7 +744,19 @@ def validate_comprehensive_accuracy(
 
             inputs_ood = tokenizer([prompt_ood], return_tensors="pt").to(device)
             with torch.no_grad():
-                outputs_ood = student_model.generate(**inputs_ood, max_new_tokens=128, do_sample=False, pad_token_id=tokenizer.pad_token_id)
+                if is_custom_transformer:
+                    outputs_ood = student_model.generate(
+                        idx=inputs_ood.input_ids, 
+                        max_new_tokens=128, 
+                        temperature=args.temperature
+                    )
+                else:
+                    outputs_ood = student_model.generate(
+                        **inputs_ood, 
+                        max_new_tokens=128, 
+                        do_sample=False, 
+                        pad_token_id=tokenizer.pad_token_id
+                    )
             gen_ood = tokenizer.decode(outputs_ood[0][inputs_ood.input_ids.shape[1]:], skip_special_tokens=True)
             pred_ood = normalize_answer(gen_ood, is_mcq=True)
             ood_results.append(pred_ood == gold_ans)
@@ -1237,11 +1249,9 @@ def main():
                                 os.remove(old_file)
                             except Exception: 
                                 pass
-
     print("🎉 训练流程顺利执行完毕！")
     if args.enable_wandb and WANDB_AVAILABLE:
         wandb.finish()
 
 if __name__ == "__main__":
     main()
-    
