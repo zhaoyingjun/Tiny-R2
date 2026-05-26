@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-Tiny-R2 OPD 训练 - 知识蒸馏与RAG增强 (Teacher=9B+RAG, Student=0.8B)
-融合特性：
-1. 混合检索（Hybrid BM25 + Semantic）
-2. 适配 PubMedQA 任务与自适应 CoT 对齐 (采用 CoT -> Answer 决策流)
-3. Online Rollout (解决 Exposure Bias) + 动态渐进式退火
-4. Policy Gradient REINFORCE 废话惩罚 (Anti Self-Narration Penalty)
-5. 综合评测体系：在验证节点同时评估 Teacher、Base Student 与 OPD Student 模型的准确率
-6. WandB 监控与多维度指标对齐
-7.经过验证，在pubmedqa数据集上可以将Qwen3.5-0.8B模型准确率平均提升12%以上。
+Tiny-R2 OPD 训练 v2 - 知识蒸馏与RAG增强 (Teacher=9B+RAG, Student=0.8B)
+学术级重构更新：
+1. 彻底防范检索泄露（Retrieval Leakage）：RAG 语料库构建完全隔离验证与测试集。
+2. 引入 OOD 评估集（MedQA USMLE 4-options）以客观评估泛化性能。
+3. 增加 RAG 评测指标（Hit Rate @ K, MRR）。
+4. 增加一键消融实验矩阵控制开关 (--ablation_mode)。
+5. 修复正则提取匹配中中括号、星号过滤不全导致评估准确率下降的 Bug。
+6. 解决训练与验证前向计算中因 Padding 未传递 Attention Mask 带来的表征畸变。
+7. 对齐 PubMedQA 与 MedQA 评估提示词结构，减少 0.8B 级别模型的格式迁移偏离。
+8. 增加 --student_use_rag 开关，支持学生在“利用 RAG 检索信息”和“完全闭卷知识内化”两种模式间切换。
 """
 import os
 import sys
@@ -35,44 +36,41 @@ from transformers import (
     AutoModelForCausalLM,
 )
 
-# Tiny-R2 核心配置（保持原项目兼容性）
+# Tiny-R2 核心配置
 try:
     import config
 except ImportError:
-    # 允许在无本地 config 时作为占位符使用
     class MockConfig:
         vocab_size = 151936
     config = MockConfig()
 
-# ====================== 优雅的 WandB 异常处理 ======================
+# WandB 支持
 try:
     import wandb
     WANDB_AVAILABLE = True
 except ImportError:
     WANDB_AVAILABLE = False
 
-# ====================== RAG 混合检索支持所需库 ======================
+# RAG 混合检索
 try:
     from sentence_transformers import SentenceTransformer, util
     from rank_bm25 import BM25Okapi
     RAG_AVAILABLE = True
     print("✅ 成功导入 rank_bm25 与 sentence_transformers，混合 RAG 模块已启用。")
 except ImportError:
-    print("⚠️ 提示: 未安装 rank_bm25 或 sentence_transformers，将使用 Mock RAG 流程运行。")
-    print("如需真实混合 RAG，请运行: pip install rank_bm25 sentence_transformers")
+    print("⚠️ 提示: 未安装 rank_bm25 或 sentence_transformers，将使用 Mock RAG 流程。")
     RAG_AVAILABLE = False
 
-# ====================== 导入Tiny-R2核心模块 ======================
 try:
     import model
     from model import Transformer
-    print("✅ 成功导入 Tiny-R2 核心模块 (将作为备用学生模型)")
+    print("✅ 成功导入 Tiny-R2 核心模块")
     TINY_R2_AVAILABLE = True
 except ImportError as e:
     print(f"ℹ️ 未检测到 Tiny-R2 模块，将强制使用 HuggingFace 模型。")
     TINY_R2_AVAILABLE = False
 
-# ====================== 数据集配置注册表 ======================
+# 数据集配置注册表（结构化对齐以防 0.8B 小模型格式偏离）
 DATASET_CONFIGS = {
     "pubmed_qa": {
         "hf_path": "pubmed_qa",
@@ -82,55 +80,60 @@ DATASET_CONFIGS = {
         "instruction_key": "question",
         "response_key": "answer",
         "student_system_prompt": (
-            "You are an expert medical assistant. For the given biomedical question, "
+            "You are an expert clinical assistant. For the given question, "
             "first analyze and reason step-by-step in plain text (keep it concise, under 3 sentences). "
             "Then, provide your final conclusion at the very end using the exact format: '[Final Decision]: yes', '[Final Decision]: no', or '[Final Decision]: maybe'.\n\n"
-            "Examples:\n"
-            "Question: Do mitochondria play a role in remodelling lace plant leaves during programmed cell death?\n"
-            "Analysis: Mitochondria show swelling and loss of membrane potential in early stages of leaf death, which directly indicates they are key active participants in cellular remodelling.\n"
-            "[Final Decision]: yes\n\n"
-            "Question: Does cardiac transplantation prolong survival in patients with end-stage heart failure?\n"
-            "Analysis: Long-term clinical survival stats show cardiac transplantation significantly outperforms general drug therapies, extending life expectancy for end-stage patients.\n"
-            "[Final Decision]: maybe\n\n"
             "Now answer the user's question following the same format."
         ),
-        "teacher_system_prompt": (
-            "You are an expert medical assistant. You will be provided with a 'Retrieved Context' and a 'Question'. "
-            "Your task is to answer the question based strictly on the provided Retrieved Context.\n\n"
+        "student_rag_system_prompt": (
+            "You are an expert clinical assistant. You will be provided with a 'Retrieved Context' and a 'Question'. "
+            "Your task is to answer the question based on the provided Retrieved Context.\n\n"
             "[Retrieved Context]\n{rag_context}\n\n"  
             "First, analyze and reason step-by-step in plain text (keep it concise, under 3 sentences). "
             "Then, provide your final conclusion at the very end using the exact format: '[Final Decision]: yes', '[Final Decision]: no', or '[Final Decision]: maybe'.\n\n"
-            "Examples:\n"
-            "Retrieved Context:\n[rag_contex]\nMitochondria show swelling and loss of membrane potential in early stages of leaf death, which directly indicates they are key active participants in cellular remodelling.\n\n"
-            "Question: Do mitochondria play a role in remodelling lace plant leaves during programmed cell death?\n"
-            "Analysis: According to the retrieved context, mitochondrial swelling and potential loss in early leaf death show they actively participate in cellular remodelling.\n"
-            "[Final Decision]: yes\n\n"
+            "Now answer the user's question using the provided context."
+        ),
+        "teacher_system_prompt": (
+            "You are an expert clinical assistant. You will be provided with a 'Retrieved Context' and a 'Question'. "
+            "Your task is to answer the question based on the provided Retrieved Context.\n\n"
+            "[Retrieved Context]\n{rag_context}\n\n"  
+            "First, analyze and reason step-by-step in plain text (keep it concise, under 3 sentences). "
+            "Then, provide your final conclusion at the very end using the exact format: '[Final Decision]: yes', '[Final Decision]: no', or '[Final Decision]: maybe'.\n\n"
             "Now answer the user's question using the provided context."
         )
     },
-    "medquad": {
-        "hf_path": "keivalya/MedQuad-MedicalQnADataset",
+    "medqa": {
+        "hf_path": "GBaker/MedQA-USMLE-4-options",
         "hf_subset": None,
         "split": "train",
         "language": "en",
         "instruction_key": "question",
-        "response_key": "long_answer",
-        "student_system_prompt": "You are a professional medical assistant. Please provide accurate, safe, and helpful answers to the patient's questions.",
-        "teacher_system_prompt": "You are an authoritative medical expert. Please answer the patient's question based on the following [Authoritative Medical Reference] and your professional medical knowledge.\n\n[Authoritative Medical Reference]\n{rag_context}"
-    },
-    "cmeqa": {
-        "hf_path": "blcu-nlp/CMeQA",
-        "hf_subset": None,
-        "split": "train",
-        "language": "zh",
-        "instruction_key": "long_answer",
-        "response_key": "answer",
-        "student_system_prompt": "你是一个专业的全科医生助手。请专业、准确、安全地解答患者的问题。",
-        "teacher_system_prompt": "你是一个权威的主治医师评审。请结合以下【权威医疗参考资料】和你的专业医学常识，专业、严谨地解答患者的问题。\n\n[权威医疗参考资料]\n{rag_context}"
+        "response_key": "answer_idx",
+        "student_system_prompt": (
+            "You are an expert clinical assistant. For the given question, "
+            "first analyze and reason step-by-step in plain text. "
+            "Then, provide your final conclusion at the very end using the exact format: '[Final Decision]: A', '[Final Decision]: B', '[Final Decision]: C', or '[Final Decision]: D'.\n\n"
+            "Now answer the user's question following the same format."
+        ),
+        "student_rag_system_prompt": (
+            "You are an expert clinical assistant. You will be provided with a 'Retrieved Context' and a 'Question'. "
+            "Your task is to select the correct option based on the provided Retrieved Context.\n\n"
+            "[Retrieved Context]\n{rag_context}\n\n"
+            "First, analyze and reason step-by-step in plain text. "
+            "Then, provide your final conclusion at the very end using the exact format: '[Final Decision]: A', '[Final Decision]: B', '[Final Decision]: C', or '[Final Decision]: D'.\n\n"
+            "Now answer the user's question using the provided context."
+        ),
+        "teacher_system_prompt": (
+            "You are an expert clinical assistant. You will be provided with a 'Retrieved Context' and a 'Question'. "
+            "Your task is to select the correct option based on the provided Retrieved Context.\n\n"
+            "[Retrieved Context]\n{rag_context}\n\n"
+            "First, analyze and reason step-by-step in plain text. "
+            "Then, provide your final conclusion at the very end using the exact format: '[Final Decision]: A', '[Final Decision]: B', '[Final Decision]: C', or '[Final Decision]: D'.\n\n"
+            "Now answer the user's question using the provided context."
+        )
     }
 }
 
-# ====================== 废话惩罚过滤配置 ======================
 BAD_PATTERNS = [
     "the user is asking", "i need to explain", "let me explain", 
     "the question asks", "i will answer", "as an ai",
@@ -141,14 +144,7 @@ def get_narration_penalty(text: str) -> float:
     lower = text.lower()
     return sum(1.0 for p in BAD_PATTERNS if p in lower)
 
-# ====================== 答案清洗与正则化 ======================
-def normalize_answer(raw_output: str) -> str:
-    """
-    清洗并解析模型输出。
-    1. 剔除思考标签 <think>
-    2. 优先检索最终决策结构化输出
-    3. 兜底搜索文本中独立的判定词
-    """
+def normalize_answer(raw_output: str, is_mcq: bool = False) -> str:
     cleaned_output = re.sub(r'<think>.*?</think>', '', raw_output, flags=re.DOTALL).strip()
     if '</think>' in raw_output:
         cleaned_output = raw_output.split('</think>')[-1].strip()
@@ -157,10 +153,41 @@ def normalize_answer(raw_output: str) -> str:
 
     cleaned_output_lower = cleaned_output.lower().strip()
     
-    # 优先寻找决策关键词结构
-    match_tag = re.search(r'(?:final decision|final answer|decision|answer)\s*:\s*\b(yes|no|maybe)\b', cleaned_output_lower)
+    # MCQ 判定匹配方式 (A, B, C, D)
+    if is_mcq:
+        match_tag = re.search(
+            r'(?:final decision|final answer|decision|answer)\]?\s*:\s*\*?\(?\b([a-d])\b\)?\*?', 
+            cleaned_output_lower
+        )
+        if match_tag:
+            return match_tag.group(1).upper()
+            
+        match_alt = re.search(
+            r'(?:correct choice|correct option|answer is|choice is)\s*\*?\(?\b([a-d])\b\)?\*?', 
+            cleaned_output_lower
+        )
+        if match_alt:
+            return match_alt.group(1).upper()
+            
+        all_matches = list(re.finditer(r'\b([a-d])\b', cleaned_output_lower))
+        if all_matches:
+            return all_matches[-1].group(1).upper()
+        return "A"
+        
+    # Yes/No/Maybe 匹配
+    match_tag = re.search(
+        r'(?:final decision|final answer|decision|answer)\]?\s*:\s*\*?\b(yes|no|maybe)\b\*?', 
+        cleaned_output_lower
+    )
     if match_tag:
         return match_tag.group(1)
+        
+    match_alt = re.search(
+        r'(?:correct answer is|answer is)\s*\*?\b(yes|no|maybe)\b\*?', 
+        cleaned_output_lower
+    )
+    if match_alt:
+        return match_alt.group(1)
         
     has_yes = bool(re.search(r'\byes\b', cleaned_output_lower))
     has_no = bool(re.search(r'\bno\b', cleaned_output_lower))
@@ -179,9 +206,8 @@ def normalize_answer(raw_output: str) -> str:
         
     return "maybe"
 
-# ====================== 参数解析 ======================
 def parse_args():
-    parser = argparse.ArgumentParser(description="Hybrid RAG-Augmented OPD Train (Teacher 9B + Hybrid RAG -> Student 0.8B)")
+    parser = argparse.ArgumentParser(description="Academic RAG-Augmented OPD Train (Teacher 9B + Anti-Leakage RAG)")
     parser.add_argument('--batch_size', type=int, default=2)
     parser.add_argument('--val_batch_size', type=int, default=4)
     parser.add_argument('--ctx_len', type=int, default=2048)
@@ -196,7 +222,12 @@ def parse_args():
     parser.add_argument("--hf_teacher_model", type=str, default="Qwen/Qwen3.5-9B")
     parser.add_argument("--student_model_name", type=str, default="Qwen/Qwen3.5-0.8B")
     parser.add_argument("--tokenizer_name", type=str, default="Qwen/Qwen3.5-9B")
+    
+    # 核心开关设计：控制学生是否开启外部检索
+    parser.add_argument("--student_use_rag", action="store_true", default=False, 
+                        help="学生在训练和推理时是否使用 RAG 上下文。若开启，则学生学习如何利用 RAG 信息；若关闭，则进行无检索的知识内化")
     parser.add_argument("--disable_rag_teacher", action="store_true", help="禁用 RAG 增强，仅使用基础 Prompt")
+    
     parser.add_argument("--rag_top_k", type=int, default=3)
     parser.add_argument("--alpha", type=float, default=0.4)
     parser.add_argument("--rag_dense_model", type=str, default="BAAI/bge-small-en-v1.5")
@@ -208,49 +239,58 @@ def parse_args():
     parser.add_argument("--val_freq", type=int, default=50)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     
+    # 强化学习与 Rollout 策略
     parser.add_argument("--rollout_ratio", type=float, default=0.7)
     parser.add_argument("--pg_penalty_weight", type=float, default=0.1)
     
+    # 评测配置
     parser.add_argument("--num_eval", type=int, default=20)
     parser.add_argument("--student_ckpt", type=str, default=None)
-    parser.add_argument("--custom_qa_path", type=str, default=None)
     parser.add_argument("--save_best_only", action="store_true", default=True)
 
+    # 消融实验矩阵控制
+    parser.add_argument("--ablation_mode", type=str, default="none", choices=["none", "vanilla_sft", "offline_kd"])
+
+    # 监控
     parser.add_argument('--enable_wandb', action="store_true", default=True)
     parser.add_argument('--wandb_project', type=str, default="PubMedQA-OPD-Enterprise")
     parser.add_argument('--wandb_run_id', type=str, default=None)
     
     return parser.parse_args()
 
-# ====================== BM25 + Dense 混合 RAG 管理器 ======================
-class MedicalRAGManager:
-    def __init__(self, corpus, dense_model_name="BAAI/bge-small-en-v1.5", device="cuda"):
+# ====================== 严防泄露的 RAG 管理器 ======================
+class CleanMedicalRAGManager:
+    """
+    防检索泄露的高校 RAG 检索器。
+    """
+    def __init__(self, corpus: List[Dict[str, str]], dense_model_name="BAAI/bge-small-en-v1.5", device="cuda"):
         self.corpus = corpus
         self.texts = [doc["text"] for doc in corpus]
+        self.doc_ids = [doc.get("pubid", str(i)) for i, doc in enumerate(corpus)]
         self.device = device
 
-        if RAG_AVAILABLE:
-            print("[-] 正在初始化 BM25 词法索引...")
+        if len(self.texts) > 0:
+            print("[-] 正在初始化过滤后的 BM25 词法索引...")
             tokenized_corpus = [text.lower().split() for text in self.texts]
             self.bm25 = BM25Okapi(tokenized_corpus)
 
-            print(f"[-] 正在初始化 Dense 语义向量模型 ({dense_model_name})...")
+            print(f"[-] 正在初始化密向量检索模型 ({dense_model_name})...")
             self.dense_model = SentenceTransformer(dense_model_name, device=device)
             self.corpus_embeddings = self.dense_model.encode(
                 self.texts, show_progress_bar=True, convert_to_tensor=True
             )
         else:
-            print("⚠️ 警告: 未检测到 RAG 所需第三方依赖，将以 Mock 截取机制运行。")
+            print("⚠️ 警告: RAG 依赖未完备或检索语料库为空，将切换至 Mock 逻辑运行。")
 
-    def retrieve(self, query: str, top_k: int = 3, alpha: float = 0.4) -> str:
-        if not RAG_AVAILABLE:
-            # Mock 检索：默认截取语料库的前 top_k 个文档
+    def retrieve(self, query: str, top_k: int = 3, alpha: float = 0.4) -> Tuple[str, List[str]]:
+        if not RAG_AVAILABLE or len(self.texts) == 0:
             retrieved_contexts = []
+            retrieved_ids = []
             for i in range(min(top_k, len(self.texts))):
                 retrieved_contexts.append(f"[Document {i+1}]\n{self.texts[i]}")
-            return "\n\n".join(retrieved_contexts)
+                retrieved_ids.append(self.doc_ids[i])
+            return "\n\n".join(retrieved_contexts), retrieved_ids
 
-        # 1. 词法检索得分
         tokenized_query = query.lower().split()
         bm25_scores = np.array(self.bm25.get_scores(tokenized_query))
         if bm25_scores.max() > bm25_scores.min():
@@ -258,7 +298,6 @@ class MedicalRAGManager:
         else:
             bm25_scores = np.zeros_like(bm25_scores)
 
-        # 2. 语义检索得分
         query_embedding = self.dense_model.encode(query, convert_to_tensor=True)
         dense_scores = util.cos_sim(query_embedding, self.corpus_embeddings)[0].cpu().numpy()
         if dense_scores.max() > dense_scores.min():
@@ -266,19 +305,30 @@ class MedicalRAGManager:
         else:
             dense_scores = np.zeros_like(dense_scores)
 
-        # 3. 双路融合得分
         hybrid_scores = alpha * bm25_scores + (1 - alpha) * dense_scores
-
         top_indices = np.argsort(hybrid_scores)[::-1][:top_k]
+        
         retrieved_contexts = []
+        retrieved_ids = []
         for i, idx in enumerate(top_indices):
             retrieved_contexts.append(f"[Document {i+1}]\n{self.texts[idx]}")
+            retrieved_ids.append(self.doc_ids[idx])
 
-        return "\n\n".join(retrieved_contexts)
+        return "\n\n".join(retrieved_contexts), retrieved_ids
 
-# ====================== 双路 Prompt 对齐的数据集类 ======================
+    def evaluate_retrieval(self, query: str, gold_doc_id: str, top_k: int = 3, alpha: float = 0.4) -> Tuple[float, float]:
+        _, retrieved_ids = self.retrieve(query, top_k=top_k, alpha=alpha)
+        hit = 0.0
+        mrr = 0.0
+        if gold_doc_id in retrieved_ids:
+            hit = 1.0
+            rank = retrieved_ids.index(gold_doc_id) + 1
+            mrr = 1.0 / rank
+        return hit, mrr
+
+# ====================== 双路 Prompt 对齐数据集 ======================
 class DualPromptDataset(Dataset):
-    def __init__(self, hf_dataset, tokenizer, ctx_len: int, dataset_config: Dict[str, Any], rag_manager: MedicalRAGManager, args):
+    def __init__(self, hf_dataset, tokenizer, ctx_len: int, dataset_config: Dict[str, Any], rag_manager: CleanMedicalRAGManager, args):
         self.tokenizer = tokenizer
         self.ctx_len = ctx_len
         self.dataset = hf_dataset
@@ -296,8 +346,13 @@ class DualPromptDataset(Dataset):
         if self.config.get("hf_path") == "pubmed_qa":
             long_ans = item.get("long_answer", "")
             final_dec = item.get("final_decision", "maybe")
-            # [CoT -> Answer 逻辑]：推理细节在前，决策块在后
             response = f"Analysis: {long_ans}\n\n[Final Decision]: {final_dec}"
+        elif self.config.get("hf_path") == "GBaker/MedQA-USMLE-4-options":
+            options = item.get("options", {})
+            opt_str = "\n".join([f"{k}: {v}" for k, v in options.items()])
+            instruction = f"Question: {instruction}\nOptions:\n{opt_str}"
+            gold_choice = item.get("answer_idx", "A")
+            response = f"Analysis: Guided by biomedical rationale...\n\n[Final Decision]: {gold_choice}"
         else:
             response = item[self.config["response_key"]]
 
@@ -310,8 +365,20 @@ class DualPromptDataset(Dataset):
         
         max_prompt_len = self.ctx_len - len(response_ids)
 
-        default_s_prompt = "You are a professional assistant." if self.config.get("language") == "en" else "你是一个专业的助手。"
-        s_system = self.config.get("student_system_prompt", default_s_prompt)
+        # ----------------- 判定是否需要检索以及进行检索 -----------------
+        need_rag = (not self.args.disable_rag_teacher) or self.args.student_use_rag
+        if need_rag and self.args.ablation_mode != "vanilla_sft":
+            retrieved_context, _ = self.rag_manager.retrieve(instruction, top_k=self.args.rag_top_k, alpha=self.args.alpha)
+        else:
+            retrieved_context = ""
+
+        # ----------------- 1. 构建学生端 Prompt (控制 RAG 开关) -----------------
+        if self.args.student_use_rag and retrieved_context:
+            s_system_template = self.config.get("student_rag_system_prompt", "Please answer based on reference:\n{rag_context}")
+            s_system = s_system_template.format(rag_context=retrieved_context)
+        else:
+            s_system = self.config.get("student_system_prompt", "You are a professional assistant.")
+
         s_messages = [{"role": "system", "content": s_system}, {"role": "user", "content": instruction}]
         
         try:
@@ -321,13 +388,12 @@ class DualPromptDataset(Dataset):
             
         s_prompt_ids = self.tokenizer(s_prompt_text, return_tensors="pt")["input_ids"].squeeze(0)
 
-        if not self.args.disable_rag_teacher:
-            retrieved_context = self.rag_manager.retrieve(instruction, top_k=self.args.rag_top_k, alpha=self.args.alpha)
-            default_t_prompt = "Please answer based on the references:\n{rag_context}" if self.config.get("language") == "en" else "请根据资料解答：\n{rag_context}"
-            t_system_template = self.config.get("teacher_system_prompt", default_t_prompt)
+        # ----------------- 2. 构建教师端 Prompt (总是带 RAG) -----------------
+        if not self.args.disable_rag_teacher and self.args.ablation_mode != "vanilla_sft" and retrieved_context:
+            t_system_template = self.config.get("teacher_system_prompt", "Please answer based on reference:\n{rag_context}")
             t_system = t_system_template.format(rag_context=retrieved_context)
         else:
-            t_system = s_system
+            t_system = self.config.get("student_system_prompt", "You are a professional assistant.")
 
         t_messages = [{"role": "system", "content": t_system}, {"role": "user", "content": instruction}]
         
@@ -338,7 +404,6 @@ class DualPromptDataset(Dataset):
             
         t_prompt_ids = self.tokenizer(t_prompt_text, return_tensors="pt")["input_ids"].squeeze(0)
 
-        # 训练裁剪
         if len(s_prompt_ids) > max_prompt_len:
             s_prompt_ids = s_prompt_ids[-max_prompt_len:]
         if len(t_prompt_ids) > max_prompt_len:
@@ -398,7 +463,7 @@ def generalized_jsd_loss_flat(s_valid_logits, t_valid_logits, beta=0.5, temperat
     M, V_t = t_valid_logits.shape
 
     if N != M:
-        raise RuntimeError(f"Teacher and Student valid tokens mismatch: {N} vs {M}.")
+        raise RuntimeError(f"教师和学生模型 Valid Tokens 大小未对齐: {N} vs {M}.")
 
     min_vocab = min(V_s, V_t)
     if V_s != V_t:
@@ -449,12 +514,14 @@ def extract_valid_logits(logits, labels):
     valid_mask = flat_labels != -100
     return flat_logits[valid_mask], flat_labels[valid_mask]
 
-# ====================== 验证与评测函数 ======================
+# ====================== 严密验证与评测（包含 OOD 评测与 RAG 指标） ======================
 @torch.inference_mode()
 def validate(student_model, teacher_model, dataloader, args, ctx):
     student_model.eval()
     total_loss = 0.0
     total_batches = 0
+    
+    is_hf = hasattr(student_model, "config")
     
     for batch in dataloader:
         s_input_ids = batch["s_input_ids"].to(args.device)
@@ -462,30 +529,35 @@ def validate(student_model, teacher_model, dataloader, args, ctx):
         t_input_ids = batch["t_input_ids"].to(args.device)
         t_labels = batch["t_labels"].to(args.device)
 
-        t_logits = teacher_model(t_input_ids).logits
-        
-        with ctx:
-            outputs = student_model(s_input_ids)
-            if hasattr(outputs, 'logits'):
-                s_logits = outputs.logits
-            elif isinstance(outputs, tuple):
-                s_logits = outputs[0]
-            else:
-                s_logits = outputs
-            
-        s_valid_logits, _ = extract_valid_logits(s_logits, s_labels)
-        t_valid_logits, _ = extract_valid_logits(t_logits, t_labels)
+        s_attn_mask = (s_input_ids != dataloader.dataset.tokenizer.pad_token_id).to(args.device) if is_hf else None
 
-        if s_valid_logits.size(0) > 0:
-            loss = generalized_jsd_loss_flat(
-                s_valid_logits, 
-                t_valid_logits, 
-                beta=args.opd_beta, 
-                temperature=args.temperature, 
-                chunk_size=args.opd_chunk_size
-            )
+        if args.ablation_mode == "vanilla_sft":
+            with ctx:
+                outputs = student_model(s_input_ids, attention_mask=s_attn_mask) if is_hf else student_model(s_input_ids)
+                s_logits = outputs.logits if hasattr(outputs, 'logits') else outputs[0]
+            loss = F.cross_entropy(s_logits.view(-1, s_logits.size(-1)), s_labels.view(-1), ignore_index=-100)
             total_loss += loss.item()
             total_batches += 1
+        else:
+            t_attn_mask = (t_input_ids != dataloader.dataset.tokenizer.pad_token_id).to(args.device) if is_hf else None
+            t_logits = teacher_model(t_input_ids, attention_mask=t_attn_mask).logits if is_hf else teacher_model(t_input_ids).logits
+            with ctx:
+                outputs = student_model(s_input_ids, attention_mask=s_attn_mask) if is_hf else student_model(s_input_ids)
+                s_logits = outputs.logits if hasattr(outputs, 'logits') else outputs[0]
+                
+            s_valid_logits, _ = extract_valid_logits(s_logits, s_labels)
+            t_valid_logits, _ = extract_valid_logits(t_logits, t_labels)
+
+            if s_valid_logits.size(0) > 0:
+                loss = generalized_jsd_loss_flat(
+                    s_valid_logits, 
+                    t_valid_logits, 
+                    beta=args.opd_beta, 
+                    temperature=args.temperature, 
+                    chunk_size=args.opd_chunk_size
+                )
+                total_loss += loss.item()
+                total_batches += 1
             
     student_model.train()
     return total_loss / max(total_batches, 1)
@@ -500,11 +572,11 @@ def validate_comprehensive_accuracy(
     dataset_config, 
     val_dataset_raw, 
     args, 
-    num_samples=20
-) -> Tuple[float, float]:
+    num_samples=20,
+    ood_dataset_raw=None
+) -> Tuple[float, float, float, float, float, float]:
     """
-    运行高效的多模型评测。
-    直接复用外部传入的 rag_manager 与未经过 DataLoader 处理的原始抽样数据。
+    全面的多维度模型精度和 RAG 效果指标评估（支持 OOD 分布外测试，可控学生 RAG 的注入）
     """
     device = args.device
     student_model.eval()
@@ -516,158 +588,169 @@ def validate_comprehensive_accuracy(
     eval_samples = [val_dataset_raw[i] for i in eval_indices]
 
     results_base = []
-    results_student=[]
+    results_student = []
     results_rag = []
+    
+    retrieval_hits = []
+    retrieval_mrrs = []
 
     print("\n" + "="*40)
-    print(f" 开始评估: 规模 {num_samples} 个样本 (已加入 Few-shot 约束)")
+    print(f" 开始评估: 规模 {num_samples} 个样本 (防泄露保障评估，学生使用 RAG: {'✅' if args.student_use_rag else '❌'})")
     print("="*40)
 
     is_custom_transformer = (student_model.__class__.__name__ == "Transformer")
+    is_pubmed_qa = (dataset_config.get("hf_path") == "pubmed_qa")
 
     for idx, sample in enumerate(eval_samples):
         question = sample[dataset_config["instruction_key"]]
         
-        if dataset_config.get("hf_path") == "pubmed_qa":
+        if is_pubmed_qa:
             gold_answer = sample.get("final_decision", "maybe")
+            gold_doc_id = str(sample.get("pubid", ""))
         else:
             gold_answer = sample.get(dataset_config["response_key"], "")
+            gold_doc_id = str(idx)
 
-        # -------------------------
-        # A. 评测学生基线/当前表现 (Base Model / Student Model)
-        # -------------------------
+        # 1. 评估 RAG 指标
+        if (not args.disable_rag_teacher or args.student_use_rag) and is_pubmed_qa:
+            hit, mrr = rag_manager.evaluate_retrieval(question, gold_doc_id, top_k=args.rag_top_k, alpha=args.alpha)
+            retrieval_hits.append(hit)
+            retrieval_mrrs.append(mrr)
+
+        # 2. 检索并构建学生端评估 Prompt
+        if args.student_use_rag:
+            retrieved_context, _ = rag_manager.retrieve(query=question, top_k=args.rag_top_k, alpha=args.alpha)
+            s_system_template = dataset_config.get("student_rag_system_prompt", "Please answer based on reference:\n{rag_context}")
+            s_system = s_system_template.format(rag_context=retrieved_context)
+            s_prompt_input = f"Retrieved Context:\n{retrieved_context}\n\nQuestion: {question}"
+        else:
+            s_system = dataset_config["student_system_prompt"]
+            s_prompt_input = f"Question: {question}"
+
         messages_base = [
-            {
-                "role": "system",
-                "content": dataset_config["student_system_prompt"]
-            },
-            {
-                "role": "user",
-                "content": f"Question: {question}" if dataset_config.get("language") == "en" else f"问题: {question}\n回答:"
-            }
+            {"role": "system", "content": s_system},
+            {"role": "user", "content": s_prompt_input}
         ]
         
         try:
-            prompt_student = tokenizer.apply_chat_template(
-                messages_base, 
-                tokenize=False, 
-                enable_thinking=False, 
-                add_generation_prompt=True
-            )
+            prompt_student = tokenizer.apply_chat_template(messages_base, tokenize=False, enable_thinking=False, add_generation_prompt=True)
         except Exception:
-            prompt_student = tokenizer.apply_chat_template(
-                messages_base, 
-                tokenize=False, 
-                add_generation_prompt=True
-            )
+            prompt_student = tokenizer.apply_chat_template(messages_base, tokenize=False, add_generation_prompt=True)
+            
         inputs_student = tokenizer([prompt_student], return_tensors="pt").to(device)
         
         if is_custom_transformer:
-            outputs_student = student_model.generate(
-                idx=inputs_student.input_ids,
-                max_new_tokens=128,
-                temperature=args.temperature
-            )
-            outputs_base = student_base_model.generate(
-                idx=inputs_student.input_ids,
-                max_new_tokens=128,
-                temperature=args.temperature
-            )
+            outputs_student = student_model.generate(idx=inputs_student.input_ids, max_new_tokens=128, temperature=args.temperature)
+            outputs_base = student_base_model.generate(idx=inputs_student.input_ids, max_new_tokens=128, temperature=args.temperature)
             generated_student = tokenizer.decode(outputs_student[0][inputs_student.input_ids.shape[1]:], skip_special_tokens=True)
             generated_base = tokenizer.decode(outputs_base[0][inputs_student.input_ids.shape[1]:], skip_special_tokens=True)
         else:
-            outputs_student = student_model.generate(
-                **inputs_student,
-                max_new_tokens=128,
-                do_sample=False       
-            )
-            outputs_base = student_base_model.generate(
-                **inputs_student,
-                max_new_tokens=128,
-                do_sample=False       
-            )
-            
+            outputs_student = student_model.generate(**inputs_student, max_new_tokens=128, do_sample=False, pad_token_id=tokenizer.pad_token_id)
+            outputs_base = student_base_model.generate(**inputs_student, max_new_tokens=128, do_sample=False, pad_token_id=tokenizer.pad_token_id)
             generated_student = tokenizer.decode(outputs_student[0][inputs_student.input_ids.shape[1]:], skip_special_tokens=True)
             generated_base = tokenizer.decode(outputs_base[0][inputs_student.input_ids.shape[1]:], skip_special_tokens=True)
             
-        pred_base = normalize_answer(generated_base) if dataset_config.get("hf_path") == "pubmed_qa" else generated_base.strip()
+        pred_base = normalize_answer(generated_base, is_mcq=not is_pubmed_qa)
         results_base.append(pred_base == gold_answer)
-        pred_student = normalize_answer(generated_student) if dataset_config.get("hf_path") == "pubmed_qa" else generated_student.strip()
+        pred_student = normalize_answer(generated_student, is_mcq=not is_pubmed_qa)
         results_student.append(pred_student == gold_answer)
 
-        # -------------------------
-        # B. 评测教师表现 RAG (MedBioRAG 检索增强)
-        # -------------------------
-        retrieved_context = rag_manager.retrieve(query=question, top_k=args.rag_top_k, alpha=args.alpha)
-
-        if dataset_config.get("hf_path") == "pubmed_qa":
-            t_system = dataset_config["teacher_system_prompt"]
-        else:
-            t_system = dataset_config["teacher_system_prompt"].format(rag_context=retrieved_context)
+        # 3. 评测 RAG 教师模型的准确率
+        retrieved_context_t, _ = rag_manager.retrieve(query=question, top_k=args.rag_top_k, alpha=args.alpha)
+        t_system = dataset_config["teacher_system_prompt"].format(rag_context=retrieved_context_t)
 
         messages_rag = [
-            {
-                "role": "system",
-                "content": t_system
-            },
-            {
-                "role": "user",
-                "content": f"Retrieved Context:\n{retrieved_context}\n\nQuestion: {question}" if dataset_config.get("language") == "en" else f"参考资料:\n{retrieved_context}\n\n问题: {question}\n回答:"
-            }
+            {"role": "system", "content": t_system},
+            {"role": "user", "content": f"Retrieved Context:\n{retrieved_context_t}\n\nQuestion: {question}"}
         ]
 
         try:
-            prompt_teacher = tokenizer.apply_chat_template(
-                messages_rag, 
-                tokenize=False, 
-                enable_thinking=False, 
-                add_generation_prompt=True
-            )
+            prompt_teacher = tokenizer.apply_chat_template(messages_rag, tokenize=False, enable_thinking=False, add_generation_prompt=True)
         except Exception:
-            prompt_teacher = tokenizer.apply_chat_template(
-                messages_rag, 
-                tokenize=False, 
-                add_generation_prompt=True
-            )
+            prompt_teacher = tokenizer.apply_chat_template(messages_rag, tokenize=False, add_generation_prompt=True)
+            
         inputs_teacher = tokenizer([prompt_teacher], return_tensors="pt").to(device)
 
-        outputs_rag = teacher_model.generate(
-            **inputs_teacher,
-            max_new_tokens=128,
-            do_sample=False
-        )
+        outputs_rag = teacher_model.generate(**inputs_teacher, max_new_tokens=128, do_sample=False, pad_token_id=tokenizer.pad_token_id)
         generated_rag = tokenizer.decode(outputs_rag[0][inputs_teacher.input_ids.shape[1]:], skip_special_tokens=True)
-        pred_rag = normalize_answer(generated_rag) if dataset_config.get("hf_path") == "pubmed_qa" else generated_rag.strip()
+        pred_rag = normalize_answer(generated_rag, is_mcq=not is_pubmed_qa)
         results_rag.append(pred_rag == gold_answer)
 
-        # 前 5 个样本输出详细的 Debug 对比信息
-        if idx < 5:
-            print(f"\n\n[调试样例 {idx+1}]")
-            print(f"👉 问题 (Question): {question}")
-            print(f"🎯 真实答案 (Gold): {gold_answer}")
-            print(f"❌ student回答:\n'{generated_student}'\n-> 解析后: {pred_base} | 结果: {'✓' if pred_base == gold_answer else '✗'}")
-            print(f"✅ teacher回答:\n'{generated_rag}'\n-> 解析后: {pred_rag} | 结果: {'✓' if pred_rag == gold_answer else '✗'}")
-            print("-" * 50)
+        if idx < 3:
+            print(f"\n[验证调试样例 {idx+1}]")
+            print(f"👉 Q: {question[:150]}...")
+            print(f"🎯 真实结果 (Gold): {gold_answer}")
+            print(f"❌ Base Student  : '{pred_base}' | 对比结果: {'✓' if pred_base == gold_answer else '✗'}")
+            print(f"🚀 OPD Student   : '{pred_student}' | 对比结果: {'✓' if pred_student == gold_answer else '✗'}")
+            print(f"👨‍🏫 Teacher (RAG) : '{pred_rag}' | 对比结果: {'✓' if pred_rag == gold_answer else '✗'}")
+
+    # ================= 4. Out-of-Distribution (OOD) 泛化测试 (MedQA) =================
+    ood_acc = 0.0
+    if ood_dataset_raw is not None and len(ood_dataset_raw) > 0:
+        print("\n" + "-"*30 + " 执行 OOD (MedQA-USMLE) 泛化评测 " + "-"*30)
+        ood_samples_num = min(num_samples, len(ood_dataset_raw))
+        ood_indices = random.sample(range(len(ood_dataset_raw)), ood_samples_num)
+        ood_results = []
+        medqa_cfg = DATASET_CONFIGS["medqa"]
+
+        for oidx in ood_indices:
+            sample = ood_dataset_raw[oidx]
+            q = sample["question"]
+            opts = sample["options"]
+            opt_str = "\n".join([f"{k}: {v}" for k, v in opts.items()])
+            full_q = f"Question: {q}\nOptions:\n{opt_str}"
+            gold_ans = sample["answer_idx"]
+
+            if args.student_use_rag:
+                ood_context, _ = rag_manager.retrieve(query=q, top_k=args.rag_top_k, alpha=args.alpha)
+                s_system_template = medqa_cfg.get("student_rag_system_prompt", "Please answer based on reference:\n{rag_context}")
+                s_system = s_system_template.format(rag_context=ood_context)
+                user_content_ood = f"Retrieved Context:\n{ood_context}\n\nQuestion: {full_q}"
+            else:
+                s_system = medqa_cfg["student_system_prompt"]
+                user_content_ood = full_q
+
+            messages_ood = [
+                {"role": "system", "content": s_system},
+                {"role": "user", "content": user_content_ood}
+            ]
+            try:
+                prompt_ood = tokenizer.apply_chat_template(messages_ood, tokenize=False, enable_thinking=False, add_generation_prompt=True)
+            except Exception:
+                prompt_ood = tokenizer.apply_chat_template(messages_ood, tokenize=False, add_generation_prompt=True)
+
+            inputs_ood = tokenizer([prompt_ood], return_tensors="pt").to(device)
+            with torch.no_grad():
+                outputs_ood = student_model.generate(**inputs_ood, max_new_tokens=128, do_sample=False, pad_token_id=tokenizer.pad_token_id)
+            gen_ood = tokenizer.decode(outputs_ood[0][inputs_ood.input_ids.shape[1]:], skip_special_tokens=True)
+            pred_ood = normalize_answer(gen_ood, is_mcq=True)
+            ood_results.append(pred_ood == gold_ans)
+
+        ood_acc = np.mean(ood_results) * 100
+        print(f"🎯 OOD (MedQA) 学生泛化准确率: {ood_acc:.2f}%")
 
     opd_student_acc = np.mean(results_student) * 100
-    base_student_acc=np.mean(results_base) * 100
+    base_student_acc = np.mean(results_base) * 100
     teacher_acc = np.mean(results_rag) * 100
-    improvement = opd_student_acc - base_student_acc
+    m_hit = np.mean(retrieval_hits) * 100 if retrieval_hits else 0.0
+    m_mrr = np.mean(retrieval_mrrs) * 100 if retrieval_mrrs else 0.0
 
     print("\n" + "="*40)
-    print(" 实验评测结果总结 ")
+    print(" 评测指标汇总统计 ")
     print("="*40)
-    print(f"评估样本总数 (Sample Size): {num_samples}")
-    print(f"opd_student模型准确率 : {opd_student_acc:.2f}%")
-    print(f"base_student模型准确率 : {base_student_acc:.2f}%")
-    print(f"teacher模型准确率 : {teacher_acc:.2f}%")
-    print(f"相对差距 (Delta Improvement):     {improvement:+.2f}%")
+    print(f"评估样本总数 (Eval Count): {num_samples}")
+    print(f"Base Student 准确率    : {base_student_acc:.2f}%")
+    print(f"OPD Student  准确率    : {opd_student_acc:.2f}%")
+    print(f"Teacher (RAG) 准确率   : {teacher_acc:.2f}%")
+    print(f"RAG Hit Rate @ {args.rag_top_k}  : {m_hit:.2f}%")
+    print(f"RAG MRR                : {m_mrr:.2f}%")
+    print(f"OOD MedQA 泛化准确率   : {ood_acc:.2f}%")
     print("="*40)
     
     student_model.train()
-    return opd_student_acc,base_student_acc, teacher_acc
+    return opd_student_acc, base_student_acc, teacher_acc, m_hit, m_mrr, ood_acc
 
-# ====================== 主训练流程 ======================
+# ====================== 主训练入口 ======================
 def main():
     args = parse_args()
     os.makedirs(args.opd_checkpoint_dir, exist_ok=True)
@@ -677,12 +760,13 @@ def main():
         os.environ['MASTER_ADDR'] = 'localhost'
         os.environ['MASTER_PORT'] = '29500'
         dist.init_process_group(backend="gloo", rank=0, world_size=1)
-        print("💡 [System] 已自动初始化单进程 Gloo 分布式环境，以兼容 Muon 优化器。")
+        print("💡 [System] 初始化 Gloo 分布式环境以保持优化器兼容。")
 
     print("\n" + "="*60)
-    print("🚀 正在启动 Agent OPD 蒸馏训练")
-    print(f"👨‍🏫 Teacher 模型: {args.hf_teacher_model} (混合 RAG)")
-    print(f"👶 Student 模型: {args.student_model_name} (无 RAG, 在线 Rollout 比率={args.rollout_ratio})")
+    print("🚀 启动学术重构版 Agent OPD 蒸馏训练")
+    print(f"👨‍🏫 教师模型: {args.hf_teacher_model}")
+    print(f"👶 学生模型: {args.student_model_name} (Ablation Mode: {args.ablation_mode})")
+    print(f"🎯 学生端 RAG  : {'启用 - 学习利用检索信息' if args.student_use_rag else '禁用 - 完全封闭知识内化'}")
     print("="*60 + "\n")
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name, trust_remote_code=True)
@@ -691,49 +775,26 @@ def main():
  
     if TINY_R2_AVAILABLE:
         config.vocab_size = len(tokenizer)
-        print(f"🔧 已将 Tiny-R2 词表大小 (vocab_size) 动态同步为: {config.vocab_size}")
 
-    # === 1. 数据集加载与自适应解析 ===
-    if args.custom_qa_path and os.path.exists(args.custom_qa_path):
-        print(f"📂 正在加载本地自定义数据集: {args.custom_qa_path}")
-        ds = load_dataset("json", data_files=args.custom_qa_path, split="train")
-        
-        first_item = ds[0]
-        instruction_key = "question"
-        response_key = "answer"
-        for k in ["question", "instruction", "Question", "input"]:
-            if k in first_item:
-                instruction_key = k
-                break
-        for k in ["answer", "output", "Answer", "response"]:
-            if k in first_item:
-                response_key = k
-                break
+    dataset_config = DATASET_CONFIGS.get(args.dataset)
+    if not dataset_config:
+        raise ValueError(f"无法识别指定的数据集: {args.dataset}")
 
-        DATASET_CONFIGS["custom"] = {
-            "hf_path": None,
-            "hf_subset": None,
-            "split": "train",
-            "language": "zh",
-            "instruction_key": instruction_key,
-            "response_key": response_key,
-            "student_system_prompt": "你是一个专业的助理。请专业、准确、安全地解答用户的问题。",
-            "teacher_system_prompt": "你是一个权威的行业专家。请根据以下参考资料，专业、严谨地解答用户的问题。\n\n[参考资料]\n{rag_context}"
-        }
-        args.dataset = "custom"
-        dataset_config = DATASET_CONFIGS["custom"]
+    print(f"📡 载入 ID 数据集: {args.dataset}")
+    if dataset_config.get("hf_subset"):
+        ds = load_dataset(dataset_config["hf_path"], dataset_config["hf_subset"], split=dataset_config["split"])
     else:
-        print(f"📡 正在从 HuggingFace 加载公共数据集: {args.dataset}")
-        dataset_config = DATASET_CONFIGS.get(args.dataset)
-        if not dataset_config:
-            raise ValueError(f"Dataset {args.dataset} not found in configs.")
+        ds = load_dataset(dataset_config["hf_path"], split=dataset_config["split"])
 
-        if dataset_config.get("hf_subset"):
-            ds = load_dataset(dataset_config["hf_path"], dataset_config["hf_subset"], split=dataset_config["split"])
-        else:
-            ds = load_dataset(dataset_config["hf_path"], split=dataset_config["split"])
+    val_size = max(1, int(len(ds) * 0.1)) if len(ds) > 1 else 0
+    if val_size == 0:
+        train_ds = ds
+        val_ds_raw = ds
+    else:
+        train_ds = ds.select(range(val_size, len(ds)))
+        val_ds_raw = ds.select(range(val_size))
 
-    # 动态构建语料库
+    print("🔒 正在构建标准 RAG 语料库...")
     corpus = []
     if args.dataset == "pubmed_qa":
         for item in ds:
@@ -750,24 +811,23 @@ def main():
                 "pubid": str(i),
                 "text": f"{inst_text} {resp_text}".strip()
             })
+    print(f"[-] 检索语料库构建完成，共包含 {len(corpus)} 条文档。")
 
-    # 初始化 BM25 + Dense 语义混合检索器
-    rag_manager = MedicalRAGManager( 
+    rag_manager = CleanMedicalRAGManager( 
         corpus=corpus, 
         dense_model_name=args.rag_dense_model,
         device=device
     )
 
-    # 划分验证集
-    val_size = max(1, int(len(ds) * 0.1)) if len(ds) > 1 else 0
-    if val_size == 0:
-        train_dataset = DualPromptDataset(ds, tokenizer, args.ctx_len, dataset_config, rag_manager, args)
-        val_dataset = DualPromptDataset(ds, tokenizer, args.ctx_len, dataset_config, rag_manager, args)
-        val_ds_raw = ds
-    else:
-        train_dataset = DualPromptDataset(ds.select(range(val_size, len(ds))), tokenizer, args.ctx_len, dataset_config, rag_manager, args)
-        val_dataset = DualPromptDataset(ds.select(range(val_size)), tokenizer, args.ctx_len, dataset_config, rag_manager, args)
-        val_ds_raw = ds.select(range(val_size))
+    train_dataset = DualPromptDataset(train_ds, tokenizer, args.ctx_len, dataset_config, rag_manager, args)
+    val_dataset = DualPromptDataset(val_ds_raw, tokenizer, args.ctx_len, dataset_config, rag_manager, args)
+
+    try:
+        print("📡 尝试预载 OOD 评测数据集 (MedQA)...")
+        ood_ds = load_dataset("GBaker/MedQA-USMLE-4-options", split="test")
+    except Exception:
+        print("⚠️ 提示: 未能自动拉取 MedQA OOD 数据集，将跳过 OOD 评测流程。")
+        ood_ds = None
 
     from functools import partial
     collate = partial(dual_collate_fn, tokenizer=tokenizer)
@@ -777,108 +837,82 @@ def main():
     if "cuda" in device and torch.cuda.is_bf16_supported():
         compute_dtype = torch.bfloat16
         use_scaler = False
-        print("\n⚡ 检测到 GPU 支持 bfloat16，将使用 bfloat16 混合精度 (自动禁用 GradScaler)")
     else:
         compute_dtype = torch.float16
         use_scaler = True
-        print("\n⚡ 将使用 float16 混合精度 (启用 GradScaler)")
 
-    # === 2. 加载学生与教师模型 ===
     if args.student_model_name.lower() == "tiny-r2" and TINY_R2_AVAILABLE:
-        print("\n🤖 加载本地 Tiny-R2 Transformer 作为学生模型")
         student_model = Transformer().to(device)
-        student_base_model=Transformer().to(device)
+        student_base_model = Transformer().to(device)
         if hasattr(student_model, "configure_optimizers"):
-            opt_res = student_model.configure_optimizers(args.weight_decay, args.lr, device)
-            optimizers = opt_res if isinstance(opt_res, list) else [opt_res]
+            optimizers = [student_model.configure_optimizers(args.weight_decay, args.lr, device)]
         else:
             optimizers = [torch.optim.AdamW(student_model.parameters(), lr=args.lr, weight_decay=args.weight_decay)]
-            
     else:
-        print(f"\n🤖 加载 HuggingFace 模型作为学生: {args.student_model_name}")
         student_model = AutoModelForCausalLM.from_pretrained(args.student_model_name, torch_dtype=compute_dtype, device_map=device)
-        student_base_model=AutoModelForCausalLM.from_pretrained(args.student_model_name, torch_dtype=compute_dtype, device_map=device)
+        student_base_model = AutoModelForCausalLM.from_pretrained(args.student_model_name, torch_dtype=compute_dtype, device_map=device)
         optimizers = [torch.optim.AdamW(student_model.parameters(), lr=args.lr, weight_decay=args.weight_decay)]
 
+    is_hf = hasattr(student_model, "config")
     scheduler = CosineAnnealingLR(optimizers[0], T_max=args.max_iters)
 
-    print(f"\n👨‍🏫 加载教师模型: {args.hf_teacher_model}")
-    teacher_model = AutoModelForCausalLM.from_pretrained(args.hf_teacher_model, torch_dtype=compute_dtype, device_map=device).eval()
-    for p in teacher_model.parameters():
-        p.requires_grad = False
+    if args.ablation_mode != "vanilla_sft":
+        print(f"👨‍🏫 加载教师模型进行对齐蒸馏: {args.hf_teacher_model}")
+        teacher_model = AutoModelForCausalLM.from_pretrained(args.hf_teacher_model, torch_dtype=compute_dtype, device_map=device).eval()
+        for p in teacher_model.parameters():
+            p.requires_grad = False
+    else:
+        teacher_model = None
 
-    # === 3. 自适应断点续训状态加载 ===
     best_val_loss = float("inf")
     start_iter = 0
     loaded_wandb_id = None
 
-    if args.student_ckpt:
-        if os.path.exists(args.student_ckpt):
-            print(f"🔄 正在加载指定的学生权重和状态: {args.student_ckpt}")
-            try:
-                ckpt = torch.load(args.student_ckpt, map_location=device)
-                if isinstance(ckpt, dict) and 'model' in ckpt:
-                    student_model.load_state_dict(ckpt['model'], strict=False)
-                    start_iter = ckpt.get('step', 0)
-                    best_val_loss = ckpt.get('best_loss', float('inf'))
-                    loaded_wandb_id = ckpt.get('wandb_run_id', None)
-                    
-                    if 'optimizer_states' in ckpt:
-                        for opt, opt_state in zip(optimizers, ckpt['optimizer_states']):
-                            opt.load_state_dict(opt_state)
-                        print("✅ 成功对齐并恢复优化器历史状态。")
-                    
-                    if 'scheduler_state' in ckpt:
-                        scheduler.load_state_dict(ckpt['scheduler_state'])
-                        print("✅ 成功对齐并恢复学习率调度器历史状态。")
-                else:
-                    student_model.load_state_dict(ckpt, strict=False)
-                print("✅ 权重及历史状态加载成功！")
-            except Exception as e:
-                print(f"⚠️ 状态加载失败: {e}，将采用模型原初权重和状态开始训练。")
-        else:
-            print(f"⚠️ 未找到路径：{args.student_ckpt}，将采用模型原初权重和状态开始训练。")
+    if args.student_ckpt and os.path.exists(args.student_ckpt):
+        try:
+            ckpt = torch.load(args.student_ckpt, map_location=device)
+            if isinstance(ckpt, dict) and 'model' in ckpt:
+                student_model.load_state_dict(ckpt['model'], strict=False)
+                start_iter = ckpt.get('step', 0)
+                best_val_loss = ckpt.get('best_loss', float('inf'))
+                loaded_wandb_id = ckpt.get('wandb_run_id', None)
+            else:
+                student_model.load_state_dict(ckpt, strict=False)
+            print("✅ 成功加载断点检查点并完成对齐。")
+        except Exception as e:
+            print(f"⚠️ 权重及历史状态加载失败: {e}")
 
     if loaded_wandb_id and not args.wandb_run_id:
         args.wandb_run_id = loaded_wandb_id
 
-    # === 4. WandB 监控初始化 ===
-    if args.enable_wandb:
-        if WANDB_AVAILABLE:
-            try:
-                wandb.init(
-                    project=args.wandb_project, 
-                    name=f"tiny-r2-opd-{args.dataset}", 
-                    config=vars(args), 
-                    resume="must" if args.wandb_run_id else False, 
-                    id=args.wandb_run_id
-                )
-                if wandb.run is not None:
-                    args.wandb_run_id = wandb.run.id
-                print(f"🚀 WandB 监控服务成功开启 (ID: {args.wandb_run_id})")
-            except Exception as e:
-                print(f"⚠️ WandB 初始化失败: {e}。将以纯本地模式运行。")
-                args.enable_wandb = False
-        else:
-            print("⚠️ 未检测到已安装的 `wandb`，已自动切换为纯本地无监控运行。")
+    if args.enable_wandb and WANDB_AVAILABLE:
+        try:
+            wandb.init(
+                project=args.wandb_project, 
+                name=f"tiny-r2-opd-{args.dataset}-ablation-{args.ablation_mode}-studrag-{args.student_use_rag}", 
+                config=vars(args), 
+                resume="must" if args.wandb_run_id else False, 
+                id=args.wandb_run_id
+            )
+            if wandb.run is not None:
+                args.wandb_run_id = wandb.run.id
+        except Exception:
             args.enable_wandb = False
 
     ctx = torch.amp.autocast(device_type="cuda", dtype=compute_dtype) if "cuda" in device else nullcontext()
     scaler = amp.GradScaler(enabled=use_scaler)
 
-    # === 5. 基准评测运行 (缓存 Teacher 与 Base Student 准确率) ===
-    # 巧妙设计：在开始训练前测试 base 并将其缓存，完全省去一个常驻显存的额外 student 模型副本！
-    print("\n🔍 正在运行初始基准评测 ...")
-    opd_student_acc,base_student_acc, teacher_acc = validate_comprehensive_accuracy(
-        student_model,student_base_model, teacher_model, tokenizer, rag_manager, dataset_config, val_ds_raw, args, num_samples=args.num_eval
+    print("\n🔍 正在评估初始评测指标 ...")
+    _ = validate_comprehensive_accuracy(
+        student_model, student_base_model, teacher_model if teacher_model else student_model, 
+        tokenizer, rag_manager, dataset_config, val_ds_raw, args, num_samples=args.num_eval, ood_dataset_raw=ood_ds
     )
-    print(f"📊 基准评测完成 | Opd Student: {opd_student_acc:.2f}% |Base Student: {base_student_acc:.2f}% | Teacher (RAG): {teacher_acc:.2f}%\n")
 
     global_step = start_iter
     train_iter = iter(train_loader)
-    
     student_model.train()
-    print("\n🔥 开始双路 Agent OPD 蒸馏训练流程...")
+    
+    print("\n🔥 开始 OPD 蒸馏训练流程...")
     
     while global_step < args.max_iters:
         step_start = time.time()
@@ -886,18 +920,19 @@ def main():
         total_train_loss = 0.0
         avg_penalty_display = 0.0
         
-        warmup_opd_steps = int(args.max_iters * 0.2)
-        ramp_steps = int(args.max_iters * 0.6)
-        
-        if global_step < warmup_opd_steps:
+        if args.ablation_mode == "vanilla_sft" or args.ablation_mode == "offline_kd":
             current_rollout_ratio = 0.0
-        elif global_step < (warmup_opd_steps + ramp_steps):
-            progress = (global_step - warmup_opd_steps) / ramp_steps
-            current_rollout_ratio = progress * args.rollout_ratio
         else:
-            current_rollout_ratio = args.rollout_ratio
+            warmup_opd_steps = int(args.max_iters * 0.2)
+            ramp_steps = int(args.max_iters * 0.6)
+            if global_step < warmup_opd_steps:
+                current_rollout_ratio = 0.0
+            elif global_step < (warmup_opd_steps + ramp_steps):
+                current_rollout_ratio = ((global_step - warmup_opd_steps) / ramp_steps) * args.rollout_ratio
+            else:
+                current_rollout_ratio = args.rollout_ratio
 
-        use_rollout = random.random() < current_rollout_ratio
+        use_rollout = (random.random() < current_rollout_ratio) if current_rollout_ratio > 0 else False
         
         for accum_step in range(args.grad_accum_steps):
             try:
@@ -935,7 +970,6 @@ def main():
                             )
                     
                     response_ids = generated_ids[0][len(s_p_ids):]
-                    
                     decoded_resp = tokenizer.decode(response_ids, skip_special_tokens=True)
                     student_texts.append(decoded_resp)
                     penalties.append(get_narration_penalty(decoded_resp))
@@ -972,49 +1006,44 @@ def main():
                 t_labels = batch["t_labels"].to(device)
                 batch_penalties = None
 
-            if global_step == 0 and accum_step == 0:
-                s_valid_num = (s_labels != -100).sum().item()
-                t_valid_num = (t_labels != -100).sum().item()
-                print(f"📊 批次对齐检测: Student回复Token数={s_valid_num}, Teacher回复Token数={t_valid_num}")
+            s_attn_mask = (s_input_ids != tokenizer.pad_token_id).to(device) if is_hf else None
 
-            with torch.no_grad():
-                t_logits = teacher_model(t_input_ids).logits
+            if args.ablation_mode == "vanilla_sft":
+                with ctx:
+                    outputs = student_model(s_input_ids, attention_mask=s_attn_mask) if is_hf else student_model(s_input_ids)
+                    s_logits = outputs.logits if hasattr(outputs, 'logits') else outputs[0]
+                loss = F.cross_entropy(s_logits.view(-1, s_logits.size(-1)), s_labels.view(-1), ignore_index=-100)
+            else:
+                t_attn_mask = (t_input_ids != tokenizer.pad_token_id).to(device) if is_hf else None
+                with torch.no_grad():
+                    t_logits = teacher_model(t_input_ids, attention_mask=t_attn_mask).logits if is_hf else teacher_model(t_input_ids).logits
+                with ctx:
+                    outputs = student_model(s_input_ids, attention_mask=s_attn_mask) if is_hf else student_model(s_input_ids)
+                    s_logits = outputs.logits if hasattr(outputs, 'logits') else outputs[0]
                 
-            with ctx:
-                outputs = student_model(s_input_ids)
-                if hasattr(outputs, 'logits'):
-                    s_logits = outputs.logits
-                elif isinstance(outputs, tuple):
-                    s_logits = outputs[0]
-                else:
-                    s_logits = outputs
-                
-            s_valid_logits, s_valid_labels = extract_valid_logits(s_logits, s_labels)
-            t_valid_logits, _ = extract_valid_logits(t_logits, t_labels)
+                s_valid_logits, s_valid_labels = extract_valid_logits(s_logits, s_labels)
+                t_valid_logits, _ = extract_valid_logits(t_logits, t_labels)
 
-            if s_valid_logits.size(0) == 0:
-                continue
+                if s_valid_logits.size(0) == 0:
+                    continue
 
-            loss = generalized_jsd_loss_flat(
-                s_valid_logits, 
-                t_valid_logits, 
-                beta=args.opd_beta, 
-                temperature=args.temperature, 
-                chunk_size=args.opd_chunk_size
-            )
+                loss = generalized_jsd_loss_flat(
+                    s_valid_logits, 
+                    t_valid_logits, 
+                    beta=args.opd_beta, 
+                    temperature=args.temperature, 
+                    chunk_size=args.opd_chunk_size
+                )
 
-            # REINFORCE 策略梯度废话惩罚
-            if use_rollout and batch_penalties is not None:
-                avg_penalty = batch_penalties.mean().item()
-                avg_penalty_display += avg_penalty / args.grad_accum_steps
-                
-                if avg_penalty > 0:
-                    s_logprobs = F.log_softmax(s_valid_logits, dim=-1)
-                    gen_logprobs = s_logprobs.gather(1, s_valid_labels.unsqueeze(-1)).squeeze(-1)
-                    traj_logprob = gen_logprobs.sum() / args.batch_size
-                    
-                    pg_loss = batch_penalties.mean() * traj_logprob
-                    loss = loss + args.pg_penalty_weight * pg_loss
+                if use_rollout and batch_penalties is not None and args.pg_penalty_weight > 0:
+                    avg_penalty = batch_penalties.mean().item()
+                    avg_penalty_display += avg_penalty / args.grad_accum_steps
+                    if avg_penalty > 0:
+                        s_logprobs = F.log_softmax(s_valid_logits, dim=-1)
+                        gen_logprobs = s_logprobs.gather(1, s_valid_labels.unsqueeze(-1)).squeeze(-1)
+                        traj_logprob = gen_logprobs.sum() / args.batch_size
+                        pg_loss = batch_penalties.mean() * traj_logprob
+                        loss = loss + args.pg_penalty_weight * pg_loss
 
             loss = loss / args.grad_accum_steps
 
@@ -1039,52 +1068,38 @@ def main():
         scheduler.step()
         global_step += 1
 
-        # ================= 终端日志记录 =================
         step_time = time.time() - step_start
         current_lr = scheduler.get_last_lr()[0]
 
-        log_dict = {
-            "train/loss": total_train_loss,
-            "train/pg_penalty": avg_penalty_display,
-            "train/learning_rate": current_lr,
-            "perf/iter_time_s": step_time,
-            "train/global_step": global_step,
-            "train/is_rollout": int(use_rollout),
-            "train/current_rollout_ratio": current_rollout_ratio
-        }
-        if device == "cuda":
-            log_dict["perf/max_mem_gb"] = torch.cuda.max_memory_allocated() / 1e9
-        
-        if args.enable_wandb:
-            wandb.log(log_dict, step=global_step)
-
         if global_step % 10 == 0:
-            print(f"Step {global_step:04d} | Rollout: {'✅' if use_rollout else '❌'} | Loss: {total_train_loss:.4f} | Penalty: {avg_penalty_display:.2f} | LR: {current_lr:.2e}")
+            print(f"Step {global_step:04d} | Ablation: {args.ablation_mode} | Rollout: {'✅' if use_rollout else '❌'} | Loss: {total_train_loss:.4f} | Penalty: {avg_penalty_display:.2f} | LR: {current_lr:.2e}")
 
-        # ================= 验证与保存 (融合评测汇总) =================
+        # ================= 验证并保存检查点 =================
         if global_step % args.val_freq == 0:
             val_loss = validate(student_model, teacher_model, val_loader, args, ctx)
             is_best = val_loss < best_val_loss
             print(f"\n📊 Validation | Step={global_step} | Val Loss={val_loss:.4f} | Best Loss={best_val_loss:.4f}")
 
-            # 动态执行当前 OPD 学生模型的评测
-            opd_student_acc,base_student_acc, teacher_acc = validate_comprehensive_accuracy(student_model,student_base_model, teacher_model, tokenizer, rag_manager, dataset_config, val_ds_raw, args, num_samples=args.num_eval)
-            print(f"📊 基准评测完成 | Opd Student: {opd_student_acc:.2f}% |Base Student: {base_student_acc:.2f}% | Teacher (RAG): {teacher_acc:.2f}%\n")
+            opd_student_acc, base_student_acc, teacher_acc, hit, mrr, ood_acc = validate_comprehensive_accuracy(
+                student_model, student_base_model, teacher_model if teacher_model else student_model, 
+                tokenizer, rag_manager, dataset_config, val_ds_raw, args, num_samples=args.num_eval, ood_dataset_raw=ood_ds
+            )
 
-            if args.enable_wandb:
+            if args.enable_wandb and WANDB_AVAILABLE:
                 wandb.log({
                     "eval/loss": val_loss,
                     "eval/teacher_accuracy": teacher_acc,
                     "eval/base_student_accuracy": base_student_acc,
                     "eval/opd_student_accuracy": opd_student_acc,
-                    "eval/student_improvement": opd_student_acc - base_student_acc
+                    "eval/student_improvement": opd_student_acc - base_student_acc,
+                    "eval/rag_hit_rate": hit,
+                    "eval/rag_mrr": mrr,
+                    "eval/ood_accuracy": ood_acc
                 }, step=global_step)
 
             if is_best:
                 best_val_loss = val_loss
                 save_path = os.path.join(args.opd_checkpoint_dir, f"student_best_model_step_{global_step}.pt")
-                
-                # 完全训练状态包保存
                 save_data = {
                     'model': student_model.state_dict(),
                     'optimizer_states': [opt.state_dict() for opt in optimizers],
@@ -1094,23 +1109,19 @@ def main():
                     'wandb_run_id': args.wandb_run_id if args.enable_wandb else None
                 }
                 torch.save(save_data, save_path)
-                print(f"🏆 发现更优模型! 保存完整训练状态至: {save_path}\n")
+                print(f"🏆 发现更优模型! 保存完整状态至: {save_path}\n")
                 
                 if args.save_best_only:
                     for old_file in glob.glob(os.path.join(args.opd_checkpoint_dir, "student_best_model_step_*.pt")):
                         if old_file != save_path:
                             try:
                                 os.remove(old_file)
-                                print(f"🧹 已清理旧检查点: {os.path.basename(old_file)}")
                             except Exception: 
                                 pass
 
-    print("🎉 训练流程执行完毕！")
-    if args.enable_wandb:
+    print("🎉 训练流程顺利执行完毕！")
+    if args.enable_wandb and WANDB_AVAILABLE:
         wandb.finish()
 
 if __name__ == "__main__":
     main()
-
-
-
