@@ -1197,9 +1197,9 @@ def main():
 
         print(f"📡 载入线上标准数据集: {args.dataset}")
         if dataset_config.get("hf_subset"):
-            ds = data_loader(dataset_config["hf_path"], dataset_config["hf_subset"], split=dataset_config["split"], cache_dir=args.cache_dir)
+            ds = train_loader(dataset_config["hf_path"], dataset_config["hf_subset"], split=dataset_config["split"], cache_dir=args.cache_dir)
         else:
-            ds = data_loader(dataset_config["hf_path"], split=dataset_config["split"], cache_dir=args.cache_dir)
+            ds = train_loader(dataset_config["hf_path"], split=dataset_config["split"], cache_dir=args.cache_dir)
 
     val_size = max(1, int(len(ds) * 0.1)) if len(ds) > 1 else 0
     if val_size == 0:
