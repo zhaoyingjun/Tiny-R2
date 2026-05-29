@@ -1249,6 +1249,7 @@ def main():
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=lambda x: dual_collate_fn(x, tokenizer))
     val_loader = DataLoader(val_dataset, batch_size=args.val_batch_size, shuffle=False, collate_fn=lambda x: dual_collate_fn(x, tokenizer))
+    data_loader=DataLoader(dataset, batch_size=args.batch_size, shuffle=True, collate_fn=lambda x: dual_collate_fn(x, tokenizer))
 
     # 3. 初始化 NLI 神经验证器
     verifier = NeuralVerifierRewardModel(cache_dir=args.cache_dir, device=device)
