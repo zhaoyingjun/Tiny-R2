@@ -1018,7 +1018,7 @@ def parse_args():
     parser.add_argument("--pg_penalty_weight", type=float, default=0.1, help="Meta-narration 惩罚系数权重")
     
     # 评测控制
-    parser.add_argument("--num_eval", type=int, default=50)
+    parser.add_argument("--num_eval", type=int, default=1)
     parser.add_argument("--student_ckpt", type=str, default=None)
     parser.add_argument("--save_best_only", action="store_true", default=True)
 
