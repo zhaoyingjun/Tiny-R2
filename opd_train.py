@@ -12,7 +12,7 @@ import argparse
 import glob
 from typing import Optional, List, Dict, Any, Tuple
 from contextlib import nullcontext
-
+import config
 import numpy as np
 import torch
 import torch.nn as nn
