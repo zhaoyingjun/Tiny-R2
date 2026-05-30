@@ -751,6 +751,12 @@ def validate(student_model, teacher_model, dataloader, args, ctx):
                 )
                 total_loss += loss.item()
                 total_batches += 1
+            # === 添加：验证batch处理完后清理显存 ===
+        del s_input_ids, s_labels, t_input_ids, t_labels
+        if 's_logits' in locals(): del s_logits
+        if 't_logits' in locals(): del t_logits
+        if 'outputs' in locals(): del outputs
+        torch.cuda.empty_cache()
             
     student_model.train()
     return total_loss / max(total_batches, 1)
@@ -883,6 +889,13 @@ def validate_comprehensive_accuracy(
             print(f"🚀 OPD Student   : '{pred_student}' | 对比结果: {'✓' if pred_student == gold_answer else '✗'}")
             if teacher_model is not None:
                 print(f"👨‍🏫 Teacher (RAG) : '{pred_rag}' | 对比结果: {'✓' if pred_rag == gold_answer else '✗'}")
+
+        # === 添加：评测样本处理完后清理显存 ===
+        del inputs_student, outputs_student, outputs_base, generated_student, generated_base
+        if 'inputs_teacher' in locals(): del inputs_teacher
+        if 'outputs_rag' in locals(): del outputs_rag
+        if 'generated_rag' in locals(): del generated_rag
+        torch.cuda.empty_cache()
 
     # 4. Out-of-Distribution (OOD) 泛化测试
     ood_acc = 0.0
@@ -1458,6 +1471,10 @@ def main():
                     else:
                         loss_opd_accum.backward()
                     step_losses["total_opd_loss"] += loss_opd_accum.item()
+                    # === 添加：释放离线对齐阶段临时显存 ===
+                    del s_logits, t_logits, s_hidden, t_hidden, s_neg_hidden
+                    del loss_opd_base, loss_align, loss_contr, loss_step
+                    torch.cuda.empty_cache()
 
             # --- 分支三：离线经典对齐对（Offline Align & Representation Contrastive Support） ---
             else:
@@ -1508,6 +1525,10 @@ def main():
                 else:
                     loss_step.backward()
                 step_losses["total_opd_loss"] += loss_step.item()
+                 # === 添加：释放Rollout阶段临时显存 ===
+                del s_logits, t_logits, s_hidden, t_hidden, s_neg_hidden
+                del loss_opd_base, loss_align, loss_contr, loss_step
+                torch.cuda.empty_cache()
 
         # 梯度裁剪与优化器步进
         if use_scaler:
@@ -1525,6 +1546,8 @@ def main():
         for sched in schedulers:
             sched.step()
         global_step += 1
+         # === 添加：每个训练Step结束后全面清理显存 ===
+        torch.cuda.empty_cache()
 
         step_time = time.time() - step_start
         current_lr = schedulers[0].get_last_lr()[0]
