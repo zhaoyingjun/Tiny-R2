@@ -1471,14 +1471,7 @@ def main():
                     else:
                         loss_opd_accum.backward()
                     step_losses["total_opd_loss"] += loss_opd_accum.item()
-                    # === 添加：释放离线对齐阶段临时显存 ===
                   
-                    del s_logits, t_logits, s_hidden, t_hidden
-                    if 's_neg_hidden' in locals():
-                         del s_neg_hidden
-                    del loss_opd_base, loss_align, loss_contr, loss_step
-                    torch.cuda.empty_cache()
-
             # --- 分支三：离线经典对齐对（Offline Align & Representation Contrastive Support） ---
             else:
                 t_attn_mask = (t_input_ids != tokenizer.pad_token_id).to(device) if is_hf else None
@@ -1528,10 +1521,7 @@ def main():
                 else:
                     loss_step.backward()
                 step_losses["total_opd_loss"] += loss_step.item()
-                 # === 添加：释放Rollout阶段临时显存 ===
-                del s_logits, t_logits, s_hidden, t_hidden, s_neg_hidden
-                del loss_opd_base, loss_align, loss_contr, loss_step
-                torch.cuda.empty_cache()
+                
 
         # 梯度裁剪与优化器步进
         if use_scaler:
@@ -1549,8 +1539,7 @@ def main():
         for sched in schedulers:
             sched.step()
         global_step += 1
-         # === 添加：每个训练Step结束后全面清理显存 ===
-        torch.cuda.empty_cache()
+       
 
         step_time = time.time() - step_start
         current_lr = schedulers[0].get_last_lr()[0]
