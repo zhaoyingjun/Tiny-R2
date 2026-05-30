@@ -1472,7 +1472,10 @@ def main():
                         loss_opd_accum.backward()
                     step_losses["total_opd_loss"] += loss_opd_accum.item()
                     # === 添加：释放离线对齐阶段临时显存 ===
-                    del s_logits, t_logits, s_hidden, t_hidden, s_neg_hidden
+                  
+                    del s_logits, t_logits, s_hidden, t_hidden
+                    if 's_neg_hidden' in locals():
+                         del s_neg_hidden
                     del loss_opd_base, loss_align, loss_contr, loss_step
                     torch.cuda.empty_cache()
 
